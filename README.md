@@ -40,9 +40,14 @@ Install dependencies (Python 3.11):
 pip install -e .[dev]
 ```
 
-Start the API server:
+Start the API server (defaults to `0.0.0.0:9000`):
 ```bash
-uvicorn dms_scheduler.main:app --reload
+python -m dms_scheduler.main --reload
+```
+
+Override the bind address or port when needed:
+```bash
+python -m dms_scheduler.main --host 127.0.0.1 --port 8000
 ```
 
 ## API summary

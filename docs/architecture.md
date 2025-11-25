@@ -32,3 +32,16 @@ Structured, stdout logging is configured at startup through `DMS_LOG_LEVEL` and 
 - Replace the placeholder `TaskExecutor._run_task` logic with real sync/copy work while keeping the status transitions intact.
 - Use the `StateStore` helpers when adding new operations to ensure timestamps and logs remain consistent.
 - Add new admin features by extending `AdminService` and wiring routes in `src/dms_scheduler/api/admin.py`.
+
+## Running the API server
+Use the built-in launcher to start Uvicorn with sensible defaults:
+
+```bash
+python -m dms_scheduler.main  # binds to 0.0.0.0:9000
+```
+
+Override the interface or port as needed:
+
+```bash
+python -m dms_scheduler.main --host 127.0.0.1 --port 8000
+```

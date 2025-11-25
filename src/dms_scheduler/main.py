@@ -1,7 +1,9 @@
+import argparse
 import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
+import uvicorn
 
 from .api import admin, tasks
 from .core.logging import configure_logging
@@ -41,3 +43,17 @@ def create_app(client: RedisClient | None = None) -> FastAPI:
 
 
 app = create_app()
+
+
+def run() -> None:
+    parser = argparse.ArgumentParser(description="Run the DMS Scheduler API server.")
+    parser.add_argument("--host", default="0.0.0.0", help="Host interface to bind (default: 0.0.0.0).")
+    parser.add_argument("--port", type=int, default=9000, help="Port to bind (default: 9000).")
+    parser.add_argument("--reload", action="store_true", help="Enable auto-reload for development.")
+    args = parser.parse_args()
+
+    uvicorn.run("dms_scheduler.main:app", host=args.host, port=args.port, reload=args.reload)
+
+
+if __name__ == "__main__":
+    run()
