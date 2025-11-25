@@ -1,10 +1,10 @@
 # Architecture and internals
 
 ## Components
-- **API layer (`src/dms_scheduler/api`)**: FastAPI routers for task operations (`/tasks`) and admin controls (`/admin`). Input validation relies on Pydantic models.
-- **Service layer (`src/dms_scheduler/services`)**: Contains the `StateStore` (Redis persistence), `TaskExecutor` (async execution and state transitions), and `AdminService` (priority and blocking controls).
-- **Core utilities (`src/dms_scheduler/core`)**: Environment-driven settings, Redis client abstraction for read/write hosts, and logging configuration suited for container stdout/stderr.
-- **Models (`src/dms_scheduler/models`)**: Task payloads, status enums, and persisted task state with timestamps, logs, priority, and results.
+- **API layer (`app/api`)**: FastAPI routers for task operations (`/tasks`) and admin controls (`/admin`). Input validation relies on Pydantic models.
+- **Service layer (`app/services`)**: Contains the `StateStore` (Redis persistence), `TaskExecutor` (async execution and state transitions), and `AdminService` (priority and blocking controls).
+- **Core utilities (`app/core`)**: Environment-driven settings, Redis client abstraction for read/write hosts, and logging configuration suited for container stdout/stderr.
+- **Models (`app/models`)**: Task payloads, status enums, and persisted task state with timestamps, logs, priority, and results.
 
 ## Redis schema
 - Tasks: `task:{task_id}` → JSON document containing `task_id`, `service`, `user_id`, `parameters`, `status`, `logs`, `result`, `priority`, and timestamps.
@@ -31,4 +31,17 @@ Structured, stdout logging is configured at startup through `DMS_LOG_LEVEL` and 
 ## Extending
 - Replace the placeholder `TaskExecutor._run_task` logic with real sync/copy work while keeping the status transitions intact.
 - Use the `StateStore` helpers when adding new operations to ensure timestamps and logs remain consistent.
-- Add new admin features by extending `AdminService` and wiring routes in `src/dms_scheduler/api/admin.py`.
+- Add new admin features by extending `AdminService` and wiring routes in `app/api/admin.py`.
+
+## Running the API server
+Use the built-in launcher to start Uvicorn with sensible defaults:
+
+```bash
+python -m app.main  # binds to 0.0.0.0:9000
+```
+
+Override the interface or port as needed:
+
+```bash
+python -m app.main --host 127.0.0.1 --port 8000
+```

@@ -2,9 +2,9 @@
 import asyncio
 import json
 
-from dms_scheduler.models.schemas import TaskResult, TaskState, TaskStatus
-from dms_scheduler.services.state_store import StateStore
-from dms_scheduler.core.redis import RedisClient
+from app.models.schemas import TaskResult, TaskState, TaskStatus
+from app.services.state_store import StateStore
+from app.core.redis import RedisClient
 
 
 class TempRedis(RedisClient):
