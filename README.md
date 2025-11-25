@@ -42,8 +42,8 @@ pip install -e .[dev]
 
 ## Configuration
 Environment variables (defaults target the HAProxy Redis endpoints):
-- `DMS_REDIS_WRITE_HOST` / `DMS_REDIS_WRITE_PORT`: write endpoint (default `haproxy-redis.redis.svc.cluster.local:6379`).
-- `DMS_REDIS_READ_HOST` / `DMS_REDIS_READ_PORT`: read endpoint (default `haproxy-redis.redis.svc.cluster.local:6380`).
+- `DMS_REDIS_WRITE_URL`: write endpoint (default `redis://haproxy-redis.dms-redis.svc.cluster.local:6379/0`).
+- `DMS_REDIS_READ_URL`: read endpoint (default `redis://haproxy-redis.dms-redis.svc.cluster.local:6380/0`).
 - `DMS_OPERATOR_TOKEN`: token required for admin APIs (default `changeme`).
 - `DMS_SERVICE_NAME`: service name for logging (default `dms-scheduler`).
 - `DMS_LOG_LEVEL`: log level (default `INFO`).
