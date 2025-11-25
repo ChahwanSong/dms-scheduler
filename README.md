@@ -1,9 +1,9 @@
 # DMS Scheduler
 
-DMS Scheduler is a FastAPI-based backend for orchestrating Data Moving Service (DMS) tasks initiated by `dms-frontend`. The scheduler persists state in Redis so pods can restart without losing task metadata or logs.
+DMS Scheduler is a FastAPI-based backend for orchestrating Data Moving Service (DMS) tasks initiated by `dms-frontend`. The scheduler shares the same Redis keys as `dms-frontend`: the frontend creates and indexes tasks, and the scheduler updates those records (status, logs, results) as work progresses.
 
 ## Overview
-- Receives task submissions from `dms-frontend` and persists task metadata (status, logs, parameters, results) in Redis.
+- Receives task submissions from `dms-frontend` and updates task metadata (status, logs, parameters, results) in Redis.
 - Executes work asynchronously (placeholder execution prints the payload) and updates task state as it runs.
 - Supports task cancellation, priority changes, and administrative blocking of incoming requests.
 - All APIs are exposed via FastAPI and designed for Kubernetes-friendly logging and configuration through environment variables.
@@ -26,7 +26,7 @@ DMS Scheduler is a FastAPI-based backend for orchestrating Data Moving Service (
 Core modules:
 - `app/api`: FastAPI routers for task and admin operations.
 - `app/services`: Stateless service layer for state persistence, task execution, and admin helpers.
-- `app/core`: Settings, Redis client, and logging helpers.
+- `app/core`: Settings, Redis client, shared task repository, and logging helpers.
 - `app/models`: Pydantic models for task payloads, task state, and enums.
 
 See `docs/architecture.md` for deeper details.
@@ -69,7 +69,7 @@ python -m app.main --host 127.0.0.1 --port 8000
 - `POST /admin/users/{user_id}/block` / `POST /admin/users/{user_id}/enable`: Block or enable a specific user. Requires operator token.
 - `GET /healthz`: Liveness check.
 
-Task lifecycle states are persisted in Redis and updated as the scheduler runs (accepted → running → completed/failed/cancelled).
+Task lifecycle states are persisted in Redis and updated as the scheduler runs (pending → dispatching → running → completed/failed/cancelled). If a task ID has not been pre-registered by `dms-frontend`, the scheduler returns a 404 instead of implicitly creating the record.
 
 ## Usage examples
 Practical examples (curl and Python) are available in the [`test`](test) directory:

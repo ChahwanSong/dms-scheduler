@@ -1,8 +1,11 @@
 import asyncio
 
 from ..core.redis import RedisClient
-from ..core.timezone import format_log_message, now_in_configured_tz
-from ..models.schemas import BlockStatus, PriorityLevel, TaskResult, TaskState, TaskStatus
+from ..core.redis_repository import RedisRepositoryProvider, RedisRepositorySettings
+from ..core.task_repository import TaskRepository
+from ..core.task_repository import format_log_entry
+from ..core.timezone import now
+from ..models.schemas import BlockStatus, PriorityLevel, TaskRecord, TaskResult, TaskStatus
 
 TASK_KEY_PREFIX = "task:"
 BLOCK_ALL_KEY = "blocks:all"
@@ -10,67 +13,75 @@ BLOCK_USER_KEY_PREFIX = "blocks:user:"
 
 
 class StateStore:
-    def __init__(self, redis_client: RedisClient | None = None):
+    def __init__(
+        self,
+        redis_client: RedisClient | None = None,
+        repository: TaskRepository | None = None,
+        repository_provider: RedisRepositoryProvider | None = None,
+    ):
         self.redis = redis_client or RedisClient()
+        self._repository_override = repository
+        self._repository_provider = repository_provider
         self._lock = asyncio.Lock()
 
-    def _task_key(self, task_id: str) -> str:
-        return f"{TASK_KEY_PREFIX}{task_id}"
+    async def _get_repository(self) -> TaskRepository:
+        if self._repository_override:
+            return self._repository_override
+        if self._repository_provider is None:
+            settings = RedisRepositorySettings.from_env()
+            self._repository_provider = RedisRepositoryProvider(settings)
+        return await self._repository_provider.get_repository()
 
-    async def save_task(self, state: TaskState) -> None:
-        await self.redis.write_json(self._task_key(state.task_id), state.model_dump())
+    async def save_task(self, state: TaskRecord) -> None:
+        repository = await self._get_repository()
+        await repository.save(state)
 
-    async def load_task(self, task_id: str) -> TaskState | None:
-        data = await self.redis.read_json(self._task_key(task_id))
-        if not data:
-            return None
-        return TaskState(**data)
+    async def load_task(self, task_id: str) -> TaskRecord | None:
+        repository = await self._get_repository()
+        return await repository.get(task_id)
 
-    async def append_log(self, task_id: str, message: str) -> TaskState | None:
+    async def append_log(self, task_id: str, message: str) -> TaskRecord | None:
+        repository = await self._get_repository()
         async with self._lock:
-            state = await self.load_task(task_id)
-            if not state:
-                return None
-            state.logs.append(format_log_message(message))
-            state.updated_at = now_in_configured_tz()
-            await self.save_task(state)
-            return state
+            return await repository.append_log(task_id, message)
 
-    async def set_status(self, task_id: str, status: TaskStatus, message: str | None = None) -> TaskState | None:
+    async def set_status(
+        self, task_id: str, status: TaskStatus, message: str | None = None
+    ) -> TaskRecord | None:
+        repository = await self._get_repository()
         async with self._lock:
-            state = await self.load_task(task_id)
-            if not state:
+            return await repository.set_status(task_id, status, log_entry=message)
+
+    async def set_result(
+        self, task_id: str, result: TaskResult, message: str | None = None
+    ) -> TaskRecord | None:
+        repository = await self._get_repository()
+        async with self._lock:
+            updated = await repository.update_result(
+                task_id,
+                pod_status=result.pod_status,
+                launcher_output=result.launcher_output,
+            )
+            if updated and message:
+                updated.logs.append(format_log_entry(message))
+                updated.updated_at = now()
+                await repository.save(updated)
+            return updated
+
+    async def set_priority(
+        self, task_id: str, priority: PriorityLevel, message: str | None = None
+    ) -> TaskRecord | None:
+        repository = await self._get_repository()
+        async with self._lock:
+            task = await repository.get(task_id)
+            if not task:
                 return None
-            state.status = status
-            state.updated_at = now_in_configured_tz()
+            task.priority = priority
+            task.updated_at = now()
             if message:
-                state.logs.append(format_log_message(message))
-            await self.save_task(state)
-            return state
-
-    async def set_result(self, task_id: str, result: TaskResult, message: str | None = None) -> TaskState | None:
-        async with self._lock:
-            state = await self.load_task(task_id)
-            if not state:
-                return None
-            state.result = result
-            state.updated_at = now_in_configured_tz()
-            if message:
-                state.logs.append(format_log_message(message))
-            await self.save_task(state)
-            return state
-
-    async def set_priority(self, task_id: str, priority: PriorityLevel, message: str | None = None) -> TaskState | None:
-        async with self._lock:
-            state = await self.load_task(task_id)
-            if not state:
-                return None
-            state.priority = priority
-            state.updated_at = now_in_configured_tz()
-            if message:
-                state.logs.append(format_log_message(message))
-            await self.save_task(state)
-            return state
+                task.logs.append(format_log_entry(message))
+            await repository.save(task)
+            return task
 
     async def set_block_all(self, blocked: bool) -> BlockStatus:
         status = await self.get_block_status()

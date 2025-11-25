@@ -3,21 +3,23 @@
 ## Components
 - **API layer (`app/api`)**: FastAPI routers for task operations (`/tasks`) and admin controls (`/admin`). Input validation relies on Pydantic models.
 - **Service layer (`app/services`)**: Contains the `StateStore` (Redis persistence), `TaskExecutor` (async execution and state transitions), and `AdminService` (priority and blocking controls).
-- **Core utilities (`app/core`)**: Environment-driven settings, Redis client abstraction for read/write hosts, and logging configuration suited for container stdout/stderr.
+- **Core utilities (`app/core`)**: Environment-driven settings, Redis client abstraction for read/write hosts, a shared Redis task repository, and logging configuration suited for container stdout/stderr.
 - **Models (`app/models`)**: Task payloads, status enums, and persisted task state with timestamps, logs, priority, and results.
 
 ## Redis schema
 - Tasks: `task:{task_id}` → JSON document containing `task_id`, `service`, `user_id`, `parameters`, `status`, `logs`, `result`, `priority`, and timestamps.
+- Indices maintained by the shared repository for querying: `index:tasks` (all task IDs), `index:service:{service}` (IDs per service), `index:service:{service}:users` (users per service), and `index:service:{service}:user:{user_id}` (IDs per service/user). TTLs mirror the task TTL to keep indices in sync.
+- Metadata used for cleanup: `task:{task_id}:metadata` contains `service` and `user_id` and follows the same TTL.
 - Blocking flags:
   - Global: `blocks:all` → `{ "blocked": true|false, "blocked_users": ["alice", ...] }`
   - Per-user: `blocks:user:{user_id}` → `{ "blocked": true|false }`
 
-These keys allow state to be recovered after pod restarts because the scheduler reuses Redis for the source of truth.
+The scheduler does **not** subscribe to Redis key expiration events; `dms-frontend` owns expiration handling and task creation. If a task ID is missing in Redis, scheduler APIs respond with a 404 instead of recreating it.
 
 ## Execution flow
 1. **Submit task** (`POST /tasks/task`):
    - Validates payload and checks global/user block flags.
-   - Persists an `accepted` state and logs the action.
+   - Sets the task status to `dispatching` and logs the action; missing task IDs return 404 because records must already exist in Redis from `dms-frontend`.
    - Launches an async worker (`TaskExecutor`) that transitions the task through `running` → `completed` (or `failed`) and writes `pod_status` / `launcher_output` into `result`.
 2. **Cancel task** (`POST /tasks/cancel`):
    - Updates the task status to `cancelled` and records the log entry.

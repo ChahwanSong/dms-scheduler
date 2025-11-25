@@ -1,9 +1,9 @@
 import logging
 from fastapi import APIRouter, Depends, HTTPException, status
 
-from ..models.schemas import CancelRequest, TaskRequest
+from ..models.schemas import CancelRequest, TaskRequest, TaskStatus
 from ..services.state_store import StateStore
-from ..services.task_executor import TaskExecutor
+from ..services.task_executor import TaskExecutor, TaskNotFoundError
 from .deps import get_state_store
 
 router = APIRouter(prefix="/tasks", tags=["tasks"])
@@ -19,9 +19,12 @@ async def submit_task(
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Requests are blocked")
 
     executor = TaskExecutor(state_store)
-    state = await executor.handle_task(payload)
+    try:
+        state = await executor.handle_task(payload)
+    except TaskNotFoundError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
     logger.info("Accepted task %s", payload.task_id)
-    return {"task_id": state.task_id, "status": state.status}
+    return {"task_id": payload.task_id, "status": TaskStatus.dispatching}
 
 
 @router.post("/cancel", status_code=status.HTTP_202_ACCEPTED)
@@ -30,7 +33,8 @@ async def cancel_task(
     state_store: StateStore = Depends(get_state_store),
 ):
     executor = TaskExecutor(state_store)
-    state = await executor.cancel_task(payload.task_id)
-    if not state:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Task not found")
+    try:
+        state = await executor.cancel_task(payload.task_id)
+    except TaskNotFoundError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
     return {"task_id": payload.task_id, "status": state.status}
