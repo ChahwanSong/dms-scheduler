@@ -1,5 +1,6 @@
 import asyncio
 import logging
+from typing import Any, Dict
 
 from ..models.schemas import TaskRequest, TaskResult, TaskStatus
 from .state_store import StateStore
@@ -12,37 +13,93 @@ class TaskExecutor:
         self.state_store = state_store
 
     async def handle_task(self, request: TaskRequest):
-        state = await self.state_store.set_status(
-            request.task_id, TaskStatus.dispatching, "Task accepted and queued"
-        )
+        state = await self.state_store.set_status(request.task_id, TaskStatus.pending, "Task accepted at DMS scheduler")
         if not state:
             raise TaskNotFoundError(request.task_id)
 
+        # check if field values are matching
+        mismatches = await self._ensure_request_matches_state(request, state)
+        if mismatches:
+            raise TaskNotMatchedError(request.task_id, mismatches)
+            
+        # asynchronously run the task work
         asyncio.create_task(self._run_task(request))
         return state
 
     async def _run_task(self, request: TaskRequest) -> None:
         task_id = request.task_id
         try:
+            logger.info("Dispatching task %s with parameters %s", task_id, request.parameters)
+            state = await self.state_store.set_status(request.task_id, TaskStatus.dispatching, "Task accepted and queued")
+            if not state:
+                raise TaskNotFoundError(request.task_id)
+
+            ###################
+            #   start a task  #
+            ###################
+            
+            # Dummy
+            await asyncio.sleep(0.1)
+            
+            
             state = await self.state_store.set_status(task_id, TaskStatus.running, "Task started")
             if not state:
                 raise TaskNotFoundError(task_id)
-            logger.info("Executing task %s with payload %s", task_id, request.parameters)
-            await asyncio.sleep(0.1)
+
+
+            # 아래 내용은 실제 task executor 코드에서 진행되어야 함.
+
             result = TaskResult(
                 pod_status="Succeeded",
                 launcher_output=f"Handled parameters: {request.parameters}",
             )
-            await self.state_store.set_result(task_id, result, "Task finished successfully")
-            await self.state_store.set_status(task_id, TaskStatus.completed)
+            updated = await self.state_store.set_result(
+                task_id, result, "Task finished successfully"
+            )
+            if not updated:
+                raise TaskNotFoundError(task_id)
+            
+            state = await self.state_store.set_status(task_id, TaskStatus.completed, "Task completed")
+            if not state:
+                raise TaskNotFoundError(task_id)
+
         except asyncio.CancelledError:
-            await self.state_store.set_status(task_id, TaskStatus.cancelled, "Task cancelled during execution")
-        except Exception as exc:  # pragma: no cover - defensive
+            await self.state_store.set_status(
+                task_id,
+                TaskStatus.cancelled,
+                "Task cancelled during async execution",
+            )
+        except Exception as exc:
             logger.exception("Task %s failed: %s", task_id, exc)
-            await self.state_store.set_status(task_id, TaskStatus.failed, f"Error: {exc}")
+            await self.state_store.set_status(
+                task_id, TaskStatus.failed, f"Unexpected Error: {exc}"
+            )
+
+    async def _ensure_request_matches_state(self, request: TaskRequest, state: Any) -> None:
+        mismatches: Dict[str, tuple[Any, Any]] = {}
+
+        if getattr(state, "service", None) != request.service:
+            mismatches["service"] = (request.service, getattr(state, "service", None))
+
+        if getattr(state, "user_id", None) != request.user_id:
+            mismatches["user_id"] = (request.user_id, getattr(state, "user_id", None))
+
+        if getattr(state, "parameters", None) != request.parameters:
+            mismatches["parameters"] = (
+                request.parameters,
+                getattr(state, "parameters", None),
+            )
+
+        return mismatches
+            
 
     async def cancel_task(self, task_id: str):
-        state = await self.state_store.set_status(task_id, TaskStatus.cancel_requested, "Cancellation requested")
+        # TODO: user_id 매치하는지 확인해야 함.
+        # TODO: running 일떄만 cancel success, 나머지는 cancel 실패 및 status 반환
+        
+        state = await self.state_store.set_status(
+            task_id, TaskStatus.cancel_requested, "Cancellation requested"
+        )
         if not state:
             raise TaskNotFoundError(task_id)
         return state
@@ -54,3 +111,19 @@ class TaskNotFoundError(Exception):
     def __init__(self, task_id: str):
         super().__init__(f"Task {task_id} not found in shared store")
         self.task_id = task_id
+
+
+class TaskNotMatchedError(Exception):
+    """Raised when request fields do not match the stored task state."""
+
+    def __init__(self, task_id: str, mismatches: Dict[str, tuple[Any, Any]]):
+        self.task_id = task_id
+        self.mismatches = mismatches
+
+        details = []
+        fields = []
+        for field, (req_val, stored_val) in mismatches.items():
+            details.append(f"Field <{field}> mismatch: request={req_val!r}, stored={stored_val!r}")
+            fields.append(field)
+        message = f"Task {task_id} request does not match stored task. " + "; ".join(details)
+        super().__init__(message)

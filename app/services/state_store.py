@@ -40,6 +40,10 @@ class StateStore:
         repository = await self._get_repository()
         return await repository.get(task_id)
 
+    async def get_task(self, task_id: str) -> TaskRecord | None:
+        repository = await self._get_repository()
+        return await repository.get(task_id)
+
     async def append_log(self, task_id: str, message: str) -> TaskRecord | None:
         repository = await self._get_repository()
         async with self._lock:
