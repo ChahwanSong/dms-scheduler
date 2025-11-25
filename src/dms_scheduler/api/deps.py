@@ -14,11 +14,12 @@ def get_state_store() -> StateStore:
 
 
 def require_operator_token(
-    authorization: str | None = Header(default=None, alias="Authorization"),
+    operator_token: str | None = Header(default=None, alias="X-Operator-Token"),
     settings=Depends(get_settings),
 ) -> None:
-    token = None
-    if authorization and authorization.lower().startswith("bearer "):
-        token = authorization.split(" ", 1)[1]
-    if not token or not settings.operator_token or token != settings.operator_token:
+    if (
+        not operator_token
+        or not settings.operator_token
+        or operator_token != settings.operator_token
+    ):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid operator token")
