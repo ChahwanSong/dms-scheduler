@@ -38,7 +38,7 @@ class InMemoryRedis(RedisClient):
 
 @pytest.fixture
 def state_store(monkeypatch):
-    monkeypatch.setenv("DMS_OPERATOR_TOKEN", "secret")
+    monkeypatch.setenv("DMS_OPERATOR_TOKEN", "changeme")
     redis_client = InMemoryRedis()
     store = StateStore(redis_client)
     return store
@@ -75,7 +75,7 @@ def test_cancel_task(client, state_store):
 
 
 def test_blocking_behavior(client):
-    operator_headers = {"X-Operator-Token": "secret"}
+    operator_headers = {"X-Operator-Token": "changeme"}
     block_response = client.post("/admin/block", headers=operator_headers)
     assert block_response.status_code == 200
 
@@ -91,7 +91,7 @@ def test_blocking_behavior(client):
 def test_priority_update(client, state_store):
     payload = {"task_id": "12", "service": "sync", "user_id": "alice", "parameters": {}}
     client.post("/tasks/task", json=payload)
-    headers = {"X-Operator-Token": "secret"}
+    headers = {"X-Operator-Token": "changeme"}
     response = client.post("/admin/priority", json={"task_id": "12", "priority": "high"}, headers=headers)
     assert response.status_code == 202
     state = asyncio.get_event_loop().run_until_complete(state_store.load_task("12"))
