@@ -4,6 +4,8 @@ from typing import Any, Dict, Optional
 
 from pydantic import BaseModel, Field
 
+from ..core.timezone import now_in_configured_tz
+
 
 class TaskStatus(str, Enum):
     accepted = "accepted"
@@ -47,7 +49,7 @@ class TaskState(BaseModel):
     user_id: str
     parameters: Dict[str, Any]
     status: TaskStatus
-    updated_at: datetime = Field(default_factory=datetime.utcnow)
+    updated_at: datetime = Field(default_factory=now_in_configured_tz)
     logs: list[str] = Field(default_factory=list)
     result: Optional[TaskResult] = None
     priority: PriorityLevel = PriorityLevel.low
