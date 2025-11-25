@@ -9,6 +9,7 @@ from .api import admin, tasks
 from .core.logging import configure_logging
 from .core.redis import RedisClient
 from .core.settings import get_settings
+from .core.timezone import now_in_configured_tz
 
 configure_logging()
 logger = logging.getLogger(__name__)
@@ -38,6 +39,17 @@ def create_app(client: RedisClient | None = None) -> FastAPI:
     @app.get("/healthz")
     async def health_check():
         return {"status": "ok"}
+
+    @app.get("/help")
+    async def help_page():
+        current_settings = get_settings()
+        example_timestamp = now_in_configured_tz().isoformat()
+        return {
+            "service": current_settings.service_name,
+            "timezone": current_settings.timezone,
+            "log_format": "<iso-timestamp>,<message>",
+            "example_log": f"{example_timestamp},Dispatching to scheduler",
+        }
 
     return app
 

@@ -1,5 +1,7 @@
 import asyncio
 import json
+from datetime import datetime, timezone
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -39,6 +41,7 @@ class InMemoryRedis(RedisClient):
 @pytest.fixture
 def state_store(monkeypatch):
     monkeypatch.setenv("DMS_OPERATOR_TOKEN", "changeme")
+    monkeypatch.setenv("DMS_TIMEZONE", "UTC")
     redis_client = InMemoryRedis()
     store = StateStore(redis_client)
     return store
@@ -58,19 +61,24 @@ def test_submit_task_and_completion(client):
     assert response.status_code == 202
     assert response.json()["status"] == "accepted"
 
-    asyncio.get_event_loop().run_until_complete(asyncio.sleep(0.2))
-    state = asyncio.get_event_loop().run_until_complete(deps.get_state_store().load_task("10"))
+    asyncio.run(asyncio.sleep(0.2))
+    state = asyncio.run(deps.get_state_store().load_task("10"))
     assert state.status == state.status.completed
     assert state.result.pod_status == "Succeeded"
+    for log_entry in state.logs:
+        timestamp, _, message = log_entry.partition(",")
+        assert message
+        parsed = datetime.fromisoformat(timestamp)
+        assert parsed.tzinfo == timezone.utc
 
 
 def test_cancel_task(client, state_store):
     payload = {"task_id": "11", "service": "sync", "user_id": "bob", "parameters": {"src": "a", "dst": "b"}}
     client.post("/tasks/task", json=payload)
-    asyncio.get_event_loop().run_until_complete(asyncio.sleep(0.05))
+    asyncio.run(asyncio.sleep(0.05))
     response = client.post("/tasks/cancel", json={"task_id": "11", "service": "sync", "user_id": "bob"})
     assert response.status_code == 202
-    state = asyncio.get_event_loop().run_until_complete(state_store.load_task("11"))
+    state = asyncio.run(state_store.load_task("11"))
     assert state.status == state.status.cancelled
 
 
@@ -94,5 +102,13 @@ def test_priority_update(client, state_store):
     headers = {"X-Operator-Token": "changeme"}
     response = client.post("/admin/priority", json={"task_id": "12", "priority": "high"}, headers=headers)
     assert response.status_code == 202
-    state = asyncio.get_event_loop().run_until_complete(state_store.load_task("12"))
+    state = asyncio.run(state_store.load_task("12"))
     assert state.priority == state.priority.high
+
+
+def test_help_endpoint(client):
+    response = client.get("/help")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["timezone"] == "UTC"
+    assert "<iso-timestamp>,<message>" in body["log_format"]

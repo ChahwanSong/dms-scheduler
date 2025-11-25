@@ -1,7 +1,7 @@
 import asyncio
-from datetime import datetime
 
 from ..core.redis import RedisClient
+from ..core.timezone import format_log_message, now_in_configured_tz
 from ..models.schemas import BlockStatus, PriorityLevel, TaskResult, TaskState, TaskStatus
 
 TASK_KEY_PREFIX = "task:"
@@ -31,8 +31,8 @@ class StateStore:
             state = await self.load_task(task_id)
             if not state:
                 return None
-            state.logs.append(message)
-            state.updated_at = datetime.utcnow()
+            state.logs.append(format_log_message(message))
+            state.updated_at = now_in_configured_tz()
             await self.save_task(state)
             return state
 
@@ -42,9 +42,9 @@ class StateStore:
             if not state:
                 return None
             state.status = status
-            state.updated_at = datetime.utcnow()
+            state.updated_at = now_in_configured_tz()
             if message:
-                state.logs.append(message)
+                state.logs.append(format_log_message(message))
             await self.save_task(state)
             return state
 
@@ -54,9 +54,9 @@ class StateStore:
             if not state:
                 return None
             state.result = result
-            state.updated_at = datetime.utcnow()
+            state.updated_at = now_in_configured_tz()
             if message:
-                state.logs.append(message)
+                state.logs.append(format_log_message(message))
             await self.save_task(state)
             return state
 
@@ -66,9 +66,9 @@ class StateStore:
             if not state:
                 return None
             state.priority = priority
-            state.updated_at = datetime.utcnow()
+            state.updated_at = now_in_configured_tz()
             if message:
-                state.logs.append(message)
+                state.logs.append(format_log_message(message))
             await self.save_task(state)
             return state
 
