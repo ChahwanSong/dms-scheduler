@@ -14,15 +14,13 @@ class RedisClient:
 
     async def connect(self) -> None:
         if self.write_client is None:
-            self.write_client = Redis(
-                host=self.settings.redis_write_host,
-                port=self.settings.redis_write_port,
+            self.write_client = Redis.from_url(
+                self.settings.redis_write_url,
                 decode_responses=True,
             )
         if self.read_client is None:
-            self.read_client = Redis(
-                host=self.settings.redis_read_host,
-                port=self.settings.redis_read_port,
+            self.read_client = Redis.from_url(
+                self.settings.redis_read_url,
                 decode_responses=True,
             )
 

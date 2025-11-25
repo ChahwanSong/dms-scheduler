@@ -5,19 +5,13 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", case_sensitive=False)
 
-    redis_write_host: str = Field(
-        "haproxy-redis.redis.svc.cluster.local",
-        validation_alias=AliasChoices("DMS_REDIS_WRITE_HOST", "redis_write_host"),
+    redis_write_url: str = Field(
+        "redis://haproxy-redis.dms-redis.svc.cluster.local:6379/0",
+        validation_alias=AliasChoices("DMS_REDIS_WRITE_URL", "redis_write_url"),
     )
-    redis_write_port: int = Field(
-        6379, validation_alias=AliasChoices("DMS_REDIS_WRITE_PORT", "redis_write_port")
-    )
-    redis_read_host: str = Field(
-        "haproxy-redis.redis.svc.cluster.local",
-        validation_alias=AliasChoices("DMS_REDIS_READ_HOST", "redis_read_host"),
-    )
-    redis_read_port: int = Field(
-        6380, validation_alias=AliasChoices("DMS_REDIS_READ_PORT", "redis_read_port")
+    redis_read_url: str = Field(
+        "redis://haproxy-redis.dms-redis.svc.cluster.local:6380/0",
+        validation_alias=AliasChoices("DMS_REDIS_READ_URL", "redis_read_url"),
     )
     operator_token: str | None = Field(
         "changeme",
