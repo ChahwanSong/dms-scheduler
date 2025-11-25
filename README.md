@@ -48,7 +48,7 @@ uvicorn dms_scheduler.main:app --reload
 ## API summary
 - `POST /tasks/task`: Submit a task. Body: `{ "task_id": "10", "service": "sync", "user_id": "alice", "parameters": {"src": "/home/gpu1", "dst": "/home/cpu1"} }`.
 - `POST /tasks/cancel`: Cancel a task. Body: `{ "task_id": "10", "service": "sync", "user_id": "alice" }`.
-- `POST /admin/priority`: Update priority (`high` or `low`). Requires `Authorization: Bearer <DMS_OPERATOR_TOKEN>`.
+- `POST /admin/priority`: Update priority (`high` or `low`). Requires `X-Operator-Token: <DMS_OPERATOR_TOKEN>`.
 - `POST /admin/block` / `POST /admin/enable`: Block or enable all frontend requests. Requires operator token.
 - `POST /admin/users/{user_id}/block` / `POST /admin/users/{user_id}/enable`: Block or enable a specific user. Requires operator token.
 - `GET /healthz`: Liveness check.
