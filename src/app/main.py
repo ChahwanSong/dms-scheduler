@@ -52,7 +52,7 @@ def run() -> None:
     parser.add_argument("--reload", action="store_true", help="Enable auto-reload for development.")
     args = parser.parse_args()
 
-    uvicorn.run("dms_scheduler.main:app", host=args.host, port=args.port, reload=args.reload)
+    uvicorn.run("app.main:app", host=args.host, port=args.port, reload=args.reload)
 
 
 if __name__ == "__main__":

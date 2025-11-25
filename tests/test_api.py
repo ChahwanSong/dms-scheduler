@@ -3,10 +3,10 @@ import json
 import pytest
 from fastapi.testclient import TestClient
 
-from dms_scheduler.api import deps
-from dms_scheduler.main import create_app
-from dms_scheduler.services.state_store import StateStore
-from dms_scheduler.core.redis import RedisClient
+from app.api import deps
+from app.main import create_app
+from app.services.state_store import StateStore
+from app.core.redis import RedisClient
 
 
 class InMemoryRedis(RedisClient):

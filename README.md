@@ -1,6 +1,6 @@
 # DMS Scheduler
 
-DMS Scheduler is the FastAPI-based backend responsible for executing and managing Data Moving Service (DMS) tasks initiated by the `dms-frontend`. The scheduler persists all state in Redis so Kubernetes restarts or pod rescheduling do not lose any task metadata.
+DMS Scheduler is a FastAPI-based backend for orchestrating Data Moving Service (DMS) tasks initiated by `dms-frontend`. The scheduler persists state in Redis so pods can restart without losing task metadata or logs.
 
 ## Overview
 - Receives task submissions from `dms-frontend` and persists task metadata (status, logs, parameters, results) in Redis.
@@ -8,10 +8,15 @@ DMS Scheduler is the FastAPI-based backend responsible for executing and managin
 - Supports task cancellation, priority changes, and administrative blocking of incoming requests.
 - All APIs are exposed via FastAPI and designed for Kubernetes-friendly logging and configuration through environment variables.
 
+## Prerequisites
+- Python 3.11 or later.
+- Redis reachable from the scheduler for read/write endpoints (or use the in-memory stub in tests).
+- Optional: a virtual environment for isolating Python dependencies.
+
 ## Architecture
 ```
 +-------------------+        +-------------------+
-|   dms-frontend    | -----> |   dms-scheduler    |
+|   dms-frontend    | -----> |   dms-scheduler   |
 +-------------------+        +-------------------+
           |                            |
           | Redis (state, logs, etc.)  |
@@ -19,38 +24,44 @@ DMS Scheduler is the FastAPI-based backend responsible for executing and managin
 ```
 
 Core modules:
-- `src/dms_scheduler/api`: FastAPI routers for task and admin operations.
-- `src/dms_scheduler/services`: Stateless service layer for state persistence, task execution, and admin helpers.
-- `src/dms_scheduler/core`: Settings, Redis client, and logging helpers.
-- `src/dms_scheduler/models`: Pydantic models for task payloads, task state, and enums.
+- `src/app/api`: FastAPI routers for task and admin operations.
+- `src/app/services`: Stateless service layer for state persistence, task execution, and admin helpers.
+- `src/app/core`: Settings, Redis client, and logging helpers.
+- `src/app/models`: Pydantic models for task payloads, task state, and enums.
 
 See `docs/architecture.md` for deeper details.
+
+## Installation
+Create a virtual environment (recommended) and install the project in editable mode:
+
+```bash
+python -m venv .venv
+source .venv/bin/activate
+pip install -e .[dev]
+```
 
 ## Configuration
 Environment variables (defaults target the HAProxy Redis endpoints):
 - `DMS_REDIS_WRITE_HOST` / `DMS_REDIS_WRITE_PORT`: write endpoint (default `haproxy-redis.redis.svc.cluster.local:6379`).
 - `DMS_REDIS_READ_HOST` / `DMS_REDIS_READ_PORT`: read endpoint (default `haproxy-redis.redis.svc.cluster.local:6380`).
-- `DMS_OPERATOR_TOKEN`: token required for admin APIs (priority and blocking controls, default `changeme`).
+- `DMS_OPERATOR_TOKEN`: token required for admin APIs (default `changeme`).
 - `DMS_SERVICE_NAME`: service name for logging (default `dms-scheduler`).
 - `DMS_LOG_LEVEL`: log level (default `INFO`).
 
 ## Running locally
-Install dependencies (Python 3.11):
-```bash
-pip install -e .[dev]
-```
-
 Start the API server (defaults to `0.0.0.0:9000`):
+
 ```bash
-python -m dms_scheduler.main --reload
+python -m app.main --reload
 ```
 
 Override the bind address or port when needed:
+
 ```bash
-python -m dms_scheduler.main --host 127.0.0.1 --port 8000
+python -m app.main --host 127.0.0.1 --port 8000
 ```
 
-## API summary
+## API reference
 - `POST /tasks/task`: Submit a task. Body: `{ "task_id": "10", "service": "sync", "user_id": "alice", "parameters": {"src": "/home/gpu1", "dst": "/home/cpu1"} }`.
 - `POST /tasks/cancel`: Cancel a task. Body: `{ "task_id": "10", "service": "sync", "user_id": "alice" }`.
 - `POST /admin/priority`: Update priority (`high` or `low`). Requires `X-Operator-Token: <DMS_OPERATOR_TOKEN>`.
@@ -60,7 +71,7 @@ python -m dms_scheduler.main --host 127.0.0.1 --port 8000
 
 Task lifecycle states are persisted in Redis and updated as the scheduler runs (accepted → running → completed/failed/cancelled).
 
-## Examples
+## Usage examples
 Practical examples (curl and Python) are available in the [`test`](test) directory:
 - `api_usage.md` shows typical curl invocations.
 - `temp_result_update.py` demonstrates updating `pod_status` and `launcher_output` fields in task results.
