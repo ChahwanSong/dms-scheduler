@@ -24,10 +24,10 @@ DMS Scheduler is a FastAPI-based backend for orchestrating Data Moving Service (
 ```
 
 Core modules:
-- `src/app/api`: FastAPI routers for task and admin operations.
-- `src/app/services`: Stateless service layer for state persistence, task execution, and admin helpers.
-- `src/app/core`: Settings, Redis client, and logging helpers.
-- `src/app/models`: Pydantic models for task payloads, task state, and enums.
+- `app/api`: FastAPI routers for task and admin operations.
+- `app/services`: Stateless service layer for state persistence, task execution, and admin helpers.
+- `app/core`: Settings, Redis client, and logging helpers.
+- `app/models`: Pydantic models for task payloads, task state, and enums.
 
 See `docs/architecture.md` for deeper details.
 
