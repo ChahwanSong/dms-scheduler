@@ -4,9 +4,9 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from ..models.schemas import PriorityLevel, PriorityRequest
 from ..services.admin import AdminService
 from ..services.state_store import StateStore
-from .deps import get_state_store, require_operator_token
+from .deps import get_state_store
 
-router = APIRouter(prefix="/admin", tags=["admin"], dependencies=[Depends(require_operator_token)])
+router = APIRouter(prefix="/tasks", tags=["admin"])
 logger = logging.getLogger(__name__)
 
 

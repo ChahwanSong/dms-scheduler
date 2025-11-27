@@ -14,22 +14,21 @@ curl -X POST http://localhost:8000/tasks/cancel \
   -d '{"task_id": "10", "service": "sync", "user_id": "alice"}'
 ```
 
-## Update task priority (admin only)
+## Update task priority
 ```bash
-curl -X POST http://localhost:8000/admin/priority \
+curl -X POST http://localhost:8000/tasks/priority \
   -H "Content-Type: application/json" \
-  -H "X-Operator-Token: ${DMS_OPERATOR_TOKEN}" \
   -d '{"task_id": "10", "priority": "high"}'
 ```
 
-## Block or enable all frontend requests (admin only)
+## Block or enable all frontend requests
 ```bash
-curl -X POST http://localhost:8000/admin/block -H "X-Operator-Token: ${DMS_OPERATOR_TOKEN}"
-curl -X POST http://localhost:8000/admin/enable -H "X-Operator-Token: ${DMS_OPERATOR_TOKEN}"
+curl -X POST http://localhost:8000/tasks/block
+curl -X POST http://localhost:8000/tasks/enable
 ```
 
-## Block or enable a specific user (admin only)
+## Block or enable a specific user
 ```bash
-curl -X POST http://localhost:8000/admin/users/alice/block -H "X-Operator-Token: ${DMS_OPERATOR_TOKEN}"
-curl -X POST http://localhost:8000/admin/users/alice/enable -H "X-Operator-Token: ${DMS_OPERATOR_TOKEN}"
+curl -X POST http://localhost:8000/tasks/users/alice/block
+curl -X POST http://localhost:8000/tasks/users/alice/enable
 ```

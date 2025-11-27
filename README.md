@@ -24,7 +24,7 @@ DMS Scheduler is a FastAPI-based backend for orchestrating Data Moving Service (
 ```
 
 Core modules:
-- `app/api`: FastAPI routers for task and admin operations.
+- `app/api`: FastAPI routers for task operations and task controls.
 - `app/services`: Stateless service layer for state persistence, task execution, and admin helpers.
 - `app/core`: Settings, Redis client, shared task repository, and logging helpers.
 - `app/models`: Pydantic models for task payloads, task state, and enums.
@@ -44,7 +44,6 @@ pip install -e .[dev]
 Environment variables (defaults target the HAProxy Redis endpoints):
 - `DMS_REDIS_WRITE_URL`: write endpoint (default `redis://haproxy-redis.dms-redis.svc.cluster.local:6379/0`).
 - `DMS_REDIS_READ_URL`: read endpoint (default `redis://haproxy-redis.dms-redis.svc.cluster.local:6380/0`).
-- `DMS_OPERATOR_TOKEN`: token required for admin APIs (default `changeme`).
 - `DMS_SERVICE_NAME`: service name for logging (default `dms-scheduler`).
 - `DMS_LOG_LEVEL`: log level (default `INFO`).
 
@@ -64,9 +63,9 @@ python -m app.main --host 127.0.0.1 --port 8000
 ## API reference
 - `POST /tasks/task`: Submit a task. Body: `{ "task_id": "10", "service": "sync", "user_id": "alice", "parameters": {"src": "/home/gpu1", "dst": "/home/cpu1"} }`.
 - `POST /tasks/cancel`: Cancel a task. Body: `{ "task_id": "10", "service": "sync", "user_id": "alice" }`.
-- `POST /admin/priority`: Update priority (`high` or `low`). Requires `X-Operator-Token: <DMS_OPERATOR_TOKEN>`.
-- `POST /admin/block` / `POST /admin/enable`: Block or enable all frontend requests. Requires operator token.
-- `POST /admin/users/{user_id}/block` / `POST /admin/users/{user_id}/enable`: Block or enable a specific user. Requires operator token.
+- `POST /tasks/priority`: Update priority (`high` or `low`).
+- `POST /tasks/block` / `POST /tasks/enable`: Block or enable all frontend requests.
+- `POST /tasks/users/{user_id}/block` / `POST /tasks/users/{user_id}/enable`: Block or enable a specific user.
 - `GET /healthz`: Liveness check.
 
 Task lifecycle states are persisted in Redis and updated as the scheduler runs (pending → dispatching → running → completed/failed/cancelled). If a task ID has not been pre-registered by `dms-frontend`, the scheduler returns a 404 instead of implicitly creating the record.
