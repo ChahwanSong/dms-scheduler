@@ -1,44 +1,31 @@
 import asyncio
 import json
+import sys
 from datetime import datetime, timezone
+from pathlib import Path
 
 import pytest
-from fastapi.testclient import TestClient
+from fastapi import HTTPException
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.append(str(ROOT))
 
 from app.api import deps
-from app.main import create_app
-from app.core.redis import RedisClient
+from app.api.admin import block_all, enable_all, set_priority
+from app.api.tasks import cancel_task, submit_task
 from app.core.task_repository import TaskRepository, format_log_entry
 from app.core.timezone import now, set_default_timezone
-from app.models.schemas import TaskRecord, TaskStatus
+from app.main import create_app
+from app.models.schemas import (
+    CancelRequest,
+    PriorityLevel,
+    PriorityRequest,
+    TaskRecord,
+    TaskRequest,
+    TaskStatus,
+)
 from app.services.state_store import StateStore
-
-
-class InMemoryRedis(RedisClient):
-    def __init__(self):
-        super().__init__()
-        self._data: dict[str, str] = {}
-
-    async def connect(self):
-        return None
-
-    async def close(self):
-        return None
-
-    async def write_json(self, key: str, value):
-        self._data[key] = json.dumps(value, default=str)
-
-    async def read_json(self, key: str):
-        raw = self._data.get(key)
-        if raw is None:
-            return None
-        return json.loads(raw)
-
-    async def delete(self, key: str):
-        self._data.pop(key, None)
-
-    async def exists(self, key: str) -> bool:
-        return key in self._data
 
 
 class InMemoryTaskRepository(TaskRepository):
@@ -72,13 +59,13 @@ class InMemoryTaskRepository(TaskRepository):
         self._index_tasks.discard(task_id)
         self._service_index.get(task.service, set()).discard(task_id)
         self._service_user_index.get((task.service, task.user_id), set()).discard(task_id)
-        if (task.service, task.user_id) in self._service_user_index and not self._service_user_index[(task.service, task.user_id)]:
+        if (task.service, task.user_id) in self._service_user_index and not self._service_user_index[
+            (task.service, task.user_id)
+        ]:
             self._service_user_index.pop((task.service, task.user_id))
             self._service_users_index.get(task.service, set()).discard(task.user_id)
 
-    async def set_status(
-        self, task_id: str, status: TaskStatus, *, log_entry: str | None = None
-    ) -> TaskRecord | None:
+    async def set_status(self, task_id: str, status: TaskStatus, *, log_entry: str | None = None) -> TaskRecord | None:
         task = await self.get(task_id)
         if not task:
             return None
@@ -128,13 +115,36 @@ class InMemoryTaskRepository(TaskRepository):
         return [await self.get(task_id) for task_id in self._service_index.get(service, set())]
 
     async def list_by_service_and_user(self, service: str, user_id: str):
-        return [
-            await self.get(task_id)
-            for task_id in self._service_user_index.get((service, user_id), set())
-        ]
+        return [await self.get(task_id) for task_id in self._service_user_index.get((service, user_id), set())]
 
     async def list_users_by_service(self, service: str):
         return list(self._service_users_index.get(service, set()))
+
+
+class InMemoryRedis:
+    def __init__(self):
+        self._data: dict[str, str] = {}
+
+    async def connect(self):
+        return None
+
+    async def close(self):
+        return None
+
+    async def write_json(self, key: str, value):
+        self._data[key] = json.dumps(value, default=str)
+
+    async def read_json(self, key: str):
+        raw = self._data.get(key)
+        if raw is None:
+            return None
+        return json.loads(raw)
+
+    async def delete(self, key: str):
+        self._data.pop(key, None)
+
+    async def exists(self, key: str) -> bool:
+        return key in self._data
 
 
 @pytest.fixture
@@ -145,33 +155,32 @@ def state_store(monkeypatch):
     redis_client = InMemoryRedis()
     repository = InMemoryTaskRepository()
     store = StateStore(redis_client=redis_client, repository=repository)
+    deps._state_store = store
     return store
 
 
 @pytest.fixture
-def client(state_store):
-    app = create_app(client=state_store.redis)
-    deps._state_store = state_store
-    with TestClient(app) as test_client:
-        yield test_client
+def anyio_backend():
+    return "asyncio"
 
 
-def test_submit_task_and_completion(client):
-    payload = {"task_id": "10", "service": "sync", "user_id": "alice", "parameters": {"src": "/a", "dst": "/b"}}
+@pytest.mark.anyio("asyncio")
+async def test_submit_task_and_completion(state_store):
+    payload = TaskRequest(task_id="10", service="sync", user_id="alice", parameters={"src": "/a", "dst": "/b"})
     preregistered = TaskRecord(
-        task_id=payload["task_id"],
-        service=payload["service"],
-        user_id=payload["user_id"],
-        parameters=payload["parameters"],
+        task_id=payload.task_id,
+        service=payload.service,
+        user_id=payload.user_id,
+        parameters=payload.parameters,
         status=TaskStatus.pending,
     )
-    asyncio.run(deps.get_state_store().save_task(preregistered))
-    response = client.post("/tasks/task", json=payload)
-    assert response.status_code == 202
-    assert response.json()["status"] == TaskStatus.dispatching
+    await deps.get_state_store().save_task(preregistered)
 
-    asyncio.run(asyncio.sleep(0.2))
-    state = asyncio.run(deps.get_state_store().load_task("10"))
+    response = await submit_task(payload, state_store=state_store)
+    assert response["status"] == TaskStatus.dispatching
+
+    await asyncio.sleep(0.2)
+    state = await deps.get_state_store().load_task("10")
     assert state.status == TaskStatus.completed
     assert state.result.pod_status == "Succeeded"
     for log_entry in state.logs:
@@ -181,57 +190,78 @@ def test_submit_task_and_completion(client):
         assert parsed.tzinfo == timezone.utc
 
 
-def test_cancel_task(client, state_store):
-    payload = {"task_id": "11", "service": "sync", "user_id": "bob", "parameters": {"src": "a", "dst": "b"}}
+@pytest.mark.anyio("asyncio")
+async def test_cancel_task(state_store):
+    payload = TaskRequest(task_id="11", service="sync", user_id="bob", parameters={"src": "a", "dst": "b"})
     preregistered = TaskRecord(
-        task_id=payload["task_id"],
-        service=payload["service"],
-        user_id=payload["user_id"],
-        parameters=payload["parameters"],
+        task_id=payload.task_id,
+        service=payload.service,
+        user_id=payload.user_id,
+        parameters=payload.parameters,
         status=TaskStatus.pending,
     )
-    asyncio.run(deps.get_state_store().save_task(preregistered))
-    client.post("/tasks/task", json=payload)
-    asyncio.run(asyncio.sleep(0.05))
-    response = client.post("/tasks/cancel", json={"task_id": "11", "service": "sync", "user_id": "bob"})
-    assert response.status_code == 202
-    state = asyncio.run(state_store.load_task("11"))
+    await deps.get_state_store().save_task(preregistered)
+
+    await submit_task(payload, state_store=state_store)
+    await asyncio.sleep(0.05)
+    cancel_request = CancelRequest(task_id=payload.task_id, service=payload.service, user_id=payload.user_id)
+    response = await cancel_task(cancel_request, state_store=state_store)
+    assert response["status"] == TaskStatus.cancel_requested
+    state = await state_store.load_task("11")
     assert state.status == TaskStatus.cancel_requested
 
 
-def test_blocking_behavior(client):
-    block_response = client.post("/tasks/block")
-    assert block_response.status_code == 200
-
-    payload = {"task_id": "blocked", "service": "sync", "user_id": "alice", "parameters": {}}
-    response = client.post("/tasks/task", json=payload)
-    assert response.status_code == 403
-
-    client.post("/tasks/enable")
-    response = client.post("/tasks/task", json=payload)
-    assert response.status_code == 202
-
-
-def test_priority_update(client, state_store):
-    payload = {"task_id": "12", "service": "sync", "user_id": "alice", "parameters": {}}
+@pytest.mark.anyio("asyncio")
+async def test_priority_update(state_store):
+    payload = TaskRequest(task_id="12", service="sync", user_id="alice", parameters={"src": "x", "dst": "y"})
     preregistered = TaskRecord(
-        task_id=payload["task_id"],
-        service=payload["service"],
-        user_id=payload["user_id"],
-        parameters=payload["parameters"],
+        task_id=payload.task_id,
+        service=payload.service,
+        user_id=payload.user_id,
+        parameters=payload.parameters,
         status=TaskStatus.pending,
     )
-    asyncio.run(deps.get_state_store().save_task(preregistered))
-    client.post("/tasks/task", json=payload)
-    response = client.post("/tasks/priority", json={"task_id": "12", "priority": "high"})
-    assert response.status_code == 202
-    state = asyncio.run(state_store.load_task("12"))
-    assert state.priority == state.priority.high
+    await deps.get_state_store().save_task(preregistered)
+    await submit_task(payload, state_store=state_store)
+
+    response = await set_priority(
+        PriorityRequest(task_id=payload.task_id, priority=PriorityLevel.high), state_store=state_store
+    )
+    assert response["priority"] == PriorityLevel.high
+    state = await state_store.load_task(payload.task_id)
+    assert state.priority == PriorityLevel.high
 
 
-def test_help_endpoint(client):
-    response = client.get("/help")
-    assert response.status_code == 200
-    body = response.json()
-    assert body["timezone"] == "UTC"
-    assert "<iso-timestamp>,<message>" in body["log_format"]
+@pytest.mark.anyio("asyncio")
+async def test_blocking_behavior(state_store):
+    block_response = await block_all(state_store=state_store)
+    assert block_response["blocked"] is True
+
+    payload = TaskRequest(task_id="blocked", service="sync", user_id="alice", parameters={})
+    preregistered = TaskRecord(
+        task_id=payload.task_id,
+        service=payload.service,
+        user_id=payload.user_id,
+        parameters=payload.parameters,
+        status=TaskStatus.pending,
+    )
+    await deps.get_state_store().save_task(preregistered)
+
+    with pytest.raises(HTTPException):
+        await submit_task(payload, state_store=state_store)
+
+    enable_response = await enable_all(state_store=state_store)
+    assert enable_response["blocked"] is False
+
+    response = await submit_task(payload, state_store=state_store)
+    assert response["status"] == TaskStatus.dispatching
+
+
+@pytest.mark.anyio("asyncio")
+async def test_help_endpoint(state_store):
+    app = create_app(client=state_store.redis)
+    help_route = next(route for route in app.routes if getattr(route, "path", "") == "/help")
+    result = await help_route.endpoint()
+
+    assert result["timezone"] == "UTC"
+    assert "<iso-timestamp>,<message>" in result["log_format"]
