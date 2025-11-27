@@ -200,15 +200,14 @@ def test_cancel_task(client, state_store):
 
 
 def test_blocking_behavior(client):
-    operator_headers = {"X-Operator-Token": "changeme"}
-    block_response = client.post("/admin/block", headers=operator_headers)
+    block_response = client.post("/tasks/block")
     assert block_response.status_code == 200
 
     payload = {"task_id": "blocked", "service": "sync", "user_id": "alice", "parameters": {}}
     response = client.post("/tasks/task", json=payload)
     assert response.status_code == 403
 
-    client.post("/admin/enable", headers=operator_headers)
+    client.post("/tasks/enable")
     response = client.post("/tasks/task", json=payload)
     assert response.status_code == 202
 
@@ -224,8 +223,7 @@ def test_priority_update(client, state_store):
     )
     asyncio.run(deps.get_state_store().save_task(preregistered))
     client.post("/tasks/task", json=payload)
-    headers = {"X-Operator-Token": "changeme"}
-    response = client.post("/admin/priority", json={"task_id": "12", "priority": "high"}, headers=headers)
+    response = client.post("/tasks/priority", json={"task_id": "12", "priority": "high"})
     assert response.status_code == 202
     state = asyncio.run(state_store.load_task("12"))
     assert state.priority == state.priority.high

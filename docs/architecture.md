@@ -1,7 +1,7 @@
 # Architecture and internals
 
 ## Components
-- **API layer (`app/api`)**: FastAPI routers for task operations (`/tasks`) and admin controls (`/admin`). Input validation relies on Pydantic models.
+- **API layer (`app/api`)**: FastAPI routers for task operations and task controls (all under `/tasks`). Input validation relies on Pydantic models.
 - **Service layer (`app/services`)**: Contains the `StateStore` (Redis persistence), `TaskExecutor` (async execution and state transitions), and `AdminService` (priority and blocking controls).
 - **Core utilities (`app/core`)**: Environment-driven settings, Redis client abstraction for read/write hosts, a shared Redis task repository, and logging configuration suited for container stdout/stderr.
 - **Models (`app/models`)**: Task payloads, status enums, and persisted task state with timestamps, logs, priority, and results.
@@ -23,7 +23,7 @@ The scheduler does **not** subscribe to Redis key expiration events; `dms-fronte
    - Launches an async worker (`TaskExecutor`) that transitions the task through `running` → `completed` (or `failed`) and writes `pod_status` / `launcher_output` into `result`.
 2. **Cancel task** (`POST /tasks/cancel`):
    - Updates the task status to `cancelled` and records the log entry.
-3. **Admin controls** (`/admin/*`):
+3. **Task controls** (`/tasks/*`):
    - Priority updates write to task state and append a log entry.
    - Blocking APIs toggle global or per-user flags that gate new submissions.
 
@@ -33,7 +33,7 @@ Structured, stdout logging is configured at startup through `DMS_LOG_LEVEL` and 
 ## Extending
 - Replace the placeholder `TaskExecutor._run_task` logic with real sync/copy work while keeping the status transitions intact.
 - Use the `StateStore` helpers when adding new operations to ensure timestamps and logs remain consistent.
-- Add new admin features by extending `AdminService` and wiring routes in `app/api/admin.py`.
+- Add new control features by extending `AdminService` and wiring routes in `app/api/admin.py`.
 
 ## Running the API server
 Use the built-in launcher to start Uvicorn with sensible defaults:

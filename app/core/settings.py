@@ -13,10 +13,6 @@ class Settings(BaseSettings):
         "redis://haproxy-redis.dms-redis.svc.cluster.local:6380/0",
         validation_alias=AliasChoices("DMS_REDIS_READ_URL", "redis_read_url"),
     )
-    operator_token: str | None = Field(
-        "changeme",
-        validation_alias=AliasChoices("DMS_OPERATOR_TOKEN", "operator_token"),
-    )
     service_name: str = Field(
         "dms-scheduler",
         validation_alias=AliasChoices("DMS_SERVICE_NAME", "service_name"),
