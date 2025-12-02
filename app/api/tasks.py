@@ -2,13 +2,15 @@ import logging
 from fastapi import APIRouter, Depends, HTTPException, status
 
 from ..models.schemas import CancelRequest, TaskRequest, TaskStatus
-from ..services.state_store import StateStore
-from ..services.task_executor import (
-    TaskExecutor,
+from ..services.errors import (
+    TaskInvalidDirectoryError,
+    TaskInvalidParametersError,
     TaskNotFoundError,
     TaskNotMatchedError,
     TaskUnsupportedServiceError,
 )
+from ..services.state_store import StateStore
+from ..services.task_executor import TaskExecutor
 from .deps import get_state_store
 
 router = APIRouter(prefix="/tasks", tags=["tasks"])
@@ -32,6 +34,11 @@ async def submit_task(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     except TaskUnsupportedServiceError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    except TaskInvalidParametersError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    except TaskInvalidDirectoryError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
     logger.info("Accepted task %s", payload.task_id)
     return {"task_id": payload.task_id, "status": TaskStatus.dispatching}
 
