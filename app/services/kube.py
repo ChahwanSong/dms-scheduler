@@ -42,7 +42,13 @@ class KubernetesClients:
 
 
 @dataclass
-class PodCheckResult:
+class PodMountCheckResult:
+    name: str
+    output: str
+
+
+@dataclass
+class PodPathCheckResult:
     name: str
     output: str
 
@@ -231,4 +237,4 @@ class VolcanoJobRunner:
         return all(cs.ready for cs in pod.status.container_statuses)
 
 
-__all__ = ["KubernetesClients", "PodCheckResult", "VolcanoJobRunner"]
+__all__ = ["KubernetesClients", "PodMountCheckResult", "PodPathCheckResult", "VolcanoJobRunner"]

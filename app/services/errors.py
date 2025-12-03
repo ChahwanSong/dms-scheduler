@@ -50,11 +50,12 @@ class TaskInvalidParametersError(Exception):
 class TaskInvalidDirectoryError(Exception):
     """Raised when the directory values are invalid."""
 
-    def __init__(self, task_id: str, service: str, dirpath: str):
+    def __init__(self, task_id: str, dirpath: str, msg: str = None):
         self.task_id = task_id
-        self.service = service
         self.dirpath = dirpath
-        super().__init__(f"Invalid directory path for service {service!r}: {dirpath}")
+        if not msg:
+            msg = "Invalid directory path"
+        super().__init__(f"{msg}: {dirpath}")
 
 
 class TaskTemplateRenderError(Exception):

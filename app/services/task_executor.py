@@ -56,10 +56,12 @@ class TaskExecutor:
         task_id = request.task_id
         try:
             await self._transition(task_id, TaskStatus.dispatching, "Task accepted by scheduler")
-            await self._transition(task_id, TaskStatus.running, "Task started")
-
+            
             result: TaskResult = await handler.execute(request)
 
+            await self._transition(task_id, TaskStatus.running, "Task started")
+            
+            # after confirming the job completion
             updated = await self.state_store.set_result(task_id, result, "Task finished successfully")
             if not updated:
                 raise TaskNotFoundError(task_id)
