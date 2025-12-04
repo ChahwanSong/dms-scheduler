@@ -1,7 +1,5 @@
 """Common task execution error types."""
 
-from typing import Any, Dict
-
 
 class TaskNotFoundError(Exception):
     """Raised when a task_id does not exist in the shared store."""
@@ -14,25 +12,17 @@ class TaskNotFoundError(Exception):
 class TaskNotMatchedError(Exception):
     """Raised when request fields do not match the stored task state."""
 
-    def __init__(self, task_id: str, mismatches: Dict[str, tuple[Any, Any]]):
+    def __init__(self, task_id: str, msg: str = None):
         self.task_id = task_id
-        self.mismatches = mismatches
-
-        details = []
-        for field, (req_val, stored_val) in mismatches.items():
-            details.append(
-                f"Field <{field}> mismatch: request={req_val!r}, stored={stored_val!r}"
-            )
-        super().__init__("Request does not match stored task. " + "; ".join(details))
+        super().__init__(msg)
 
 
 class TaskUnsupportedServiceError(Exception):
     """Raised when the requested service is not supported by the executor."""
 
-    def __init__(self, task_id: str, service: str):
+    def __init__(self, task_id: str, msg: str):
         self.task_id = task_id
-        self.service = service
-        super().__init__(f"Requested unsupported service: {service!r}")
+        super().__init__(msg)
 
 
 class TaskInvalidParametersError(Exception):

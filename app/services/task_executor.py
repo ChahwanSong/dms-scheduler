@@ -38,16 +38,33 @@ class TaskExecutor:
 
         mismatches = await self._ensure_request_matches_state(request, state)
         if mismatches:
-            raise TaskNotMatchedError(request.task_id, mismatches)
+            details = []
+            for field, (req_val, stored_val) in mismatches.items():
+                details.append(f"Field <{field}> mismatch: request={req_val!r}, stored={stored_val!r}")
+            msg = "Request does not match stored task. " + "; ".join(details)
+            logger.error(f"Task {request.task_id} failed: {msg}")
+            await self._transition(request.task_id, TaskStatus.failed, msg)
+            raise TaskNotMatchedError(request.task_id, msg)
 
         if request.service not in ALLOWED_SERVICES:
-            raise TaskUnsupportedServiceError(request.task_id, request.service)
+            msg = f"Requested unsupported service: {request.service}"
+            logger.error(f"Task {request.task_id} failed: {msg}")
+            await self._transition(request.task_id, TaskStatus.failed, msg)
+            raise TaskUnsupportedServiceError(request.task_id, msg)
 
         handler = self._handlers.get(request.service)
         if not handler:
-            raise TaskUnsupportedServiceError(request.task_id, request.service)
+            msg = f"Scheduler has no handler of service: {request.service}"
+            logger.error(f"Task {request.task_id} failed: {msg}")
+            await self._transition(request.task_id, TaskStatus.failed, msg)
+            raise TaskUnsupportedServiceError(request.task_id, msg)
 
-        await handler.validate(request)
+        try:
+            await handler.validate(request)
+        except (TaskInvalidParametersError, TaskInvalidDirectoryError) as exc:
+            logger.error("Task %s failed: %s", request.task_id, exc)
+            await self._transition(request.task_id, TaskStatus.failed, str(exc))
+            raise
 
         asyncio.create_task(self._run_task(request, handler))
         return state
