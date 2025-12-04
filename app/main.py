@@ -2,7 +2,7 @@ import argparse
 import logging
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 import uvicorn
 
 from .api import admin, tasks
@@ -38,7 +38,17 @@ def create_app(client: RedisClient | None = None) -> FastAPI:
 
     @app.get("/healthz")
     async def health_check():
-        return {"status": "ok"}
+        if redis_client:
+            try:
+                redis_ok = await redis_client.ping()
+            except Exception as exc:  # pragma: no cover - defensive logging
+                logger.exception("Redis ping failed")
+                raise HTTPException(status_code=503, detail="Redis unavailable") from exc
+            if not redis_ok:
+                raise HTTPException(status_code=503, detail="Redis unavailable")
+            return {"status": "ok", "redis": "ok"}
+
+        return {"status": "ok", "redis": "not_configured"}
 
     @app.get("/help")
     async def help_page():
