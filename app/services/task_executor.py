@@ -9,6 +9,7 @@ from .errors import (
     TaskInvalidDirectoryError,
     TaskInvalidParametersError,
     TaskJobError,
+    TaskCancelForbiddenError,
     TaskNotFoundError,
     TaskNotMatchedError,
     TaskTemplateRenderError,
@@ -17,7 +18,7 @@ from .errors import (
 from .handlers.base import BaseTaskHandler
 from .handlers.sync import SyncTaskHandler
 from .kube import VolcanoJobRunner
-from ..models.schemas import TaskRequest, TaskResult, TaskStatus
+from ..models.schemas import CancelRequest, TaskRequest, TaskResult, TaskStatus
 from .state_store import StateStore
 
 logger = logging.getLogger(__name__)
@@ -28,7 +29,7 @@ class TaskExecutor:
         self.state_store = state_store
         job_runner = VolcanoJobRunner(K8S_DMS_NAMESPACE)
         self._handlers: Dict[str, BaseTaskHandler] = {
-            "sync": SyncTaskHandler(job_runner),
+            "sync": SyncTaskHandler(job_runner, state_store),
         }
 
     async def handle_task(self, request: TaskRequest):
@@ -73,11 +74,11 @@ class TaskExecutor:
         task_id = request.task_id
         try:
             await self._transition(task_id, TaskStatus.dispatching, "Task accepted by scheduler")
-            
-            result: TaskResult = await handler.execute(request)
 
             await self._transition(task_id, TaskStatus.running, "Task started")
-            
+
+            result: TaskResult = await handler.execute(request)
+
             # after confirming the job completion
             updated = await self.state_store.set_result(task_id, result, "Task finished successfully")
             if not updated:
@@ -93,18 +94,34 @@ class TaskExecutor:
             TaskJobError,
         ) as exc:
             logger.error("Task %s failed: %s", task_id, exc)
-            await self._transition(task_id, TaskStatus.failed, str(exc))
+            state = await self.state_store.get_task(task_id)
+            if state and state.status == TaskStatus.cancel_requested:
+                await self._transition(task_id, TaskStatus.cancelled, f"Task cancelled: {exc}")
+            else:
+                await self._transition(task_id, TaskStatus.failed, str(exc))
         except Exception as exc:  # pragma: no cover - defensive
             logger.exception("Task %s failed unexpectedly", task_id)
             await self._transition(task_id, TaskStatus.failed, f"Unexpected error: {exc}")
 
-    async def cancel_task(self, task_id: str):
-        state = await self.state_store.set_status(
-            task_id, TaskStatus.cancel_requested, "Cancellation requested"
-        )
+    async def cancel_task(self, request: CancelRequest):
+        state = await self.state_store.get_task(request.task_id)
         if not state:
-            raise TaskNotFoundError(task_id)
-        return state
+            raise TaskNotFoundError(request.task_id)
+
+        if state.service != request.service or state.user_id != request.user_id:
+            msg = "Cancel request does not match stored task identity"
+            raise TaskCancelForbiddenError(request.task_id, msg)
+
+        handler = self._handlers.get(request.service)
+        if not handler:
+            msg = f"Scheduler has no handler of service: {request.service}"
+            raise TaskUnsupportedServiceError(request.task_id, msg)
+
+        updated = await self._transition(
+            request.task_id, TaskStatus.cancel_requested, "Cancellation requested"
+        )
+        await handler.cancel(request, updated)
+        return await self.state_store.get_task(request.task_id)
 
     async def _transition(self, task_id: str, status: TaskStatus, message: str):
         state = await self.state_store.set_status(task_id, status, message)

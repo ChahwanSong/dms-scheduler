@@ -33,15 +33,17 @@ from ..errors import (
     TaskTemplateRenderError,
 )
 from ..kube import PodMountCheckResult, PodPathCheckResult, VolcanoJobRunner
-from ...models.schemas import TaskRequest, TaskResult
+from ..state_store import StateStore
+from ...models.schemas import CancelRequest, TaskRecord, TaskRequest, TaskResult
 from .base import BaseTaskHandler
 
 logger = logging.getLogger(__name__)
 
 
 class SyncTaskHandler(BaseTaskHandler):
-    def __init__(self, job_runner: VolcanoJobRunner):
+    def __init__(self, job_runner: VolcanoJobRunner, state_store: StateStore):
         self.job_runner = job_runner
+        self.state_store = state_store
 
     async def validate(self, request: TaskRequest) -> None:
         if not isinstance(request.parameters, dict):
@@ -93,9 +95,10 @@ class SyncTaskHandler(BaseTaskHandler):
         )
 
         verifier_job_name = f"{K8S_VERIFIER_JOB_NAME_PREFIX}-{task_id}"
-        await self.job_runner.create_job(verifier_obj)
+        await self._add_active_job(task_id, verifier_job_name, "[sync] registered verifier job")
 
         try:
+            await self.job_runner.create_job(verifier_obj)
             verifier_pods = await self.job_runner.wait_for_pods_ready(
                 label_selector=f"{K8S_VERIFIER_JOB_LABEL}={task_id}",
                 expected=2,
@@ -118,11 +121,49 @@ class SyncTaskHandler(BaseTaskHandler):
                 dst_path_type,
             )
         finally:
-            await self.job_runner.delete_job(verifier_job_name)
+            try:
+                await self.job_runner.delete_job(verifier_job_name)
+            except TaskJobError as exc:
+                logger.warning(
+                    "[Task %s] Failed to delete verifier job %s: %s",
+                    task_id,
+                    verifier_job_name,
+                    exc,
+                )
+            finally:
+                await self._remove_active_job(
+                    task_id, verifier_job_name, "[sync] verifier job cleaned up"
+                )
 
         return TaskResult(
             pod_status="Succeeded",
             launcher_output=self._format_output(pod_status, logs),
+        )
+
+    async def cancel(self, request: CancelRequest, state: TaskRecord | None = None) -> None:
+        task_state = state
+        if task_state is None:
+            task_state = await self.state_store.get_task(request.task_id)
+
+        if task_state is None:
+            return
+
+        jobs = list(task_state.active_jobs)
+        if not jobs:
+            await self.state_store.append_log(request.task_id, "[sync] no active jobs to cancel")
+            return
+
+        for job_name in jobs:
+            try:
+                await self.job_runner.delete_job(job_name)
+                await self.state_store.append_log(
+                    request.task_id, f"[sync] cancellation sent to job {job_name}"
+                )
+            except TaskJobError as exc:
+                logger.warning("[Task %s] Failed to cancel job %s: %s", request.task_id, job_name, exc)
+
+        await self.state_store.clear_active_jobs(
+            request.task_id, "[sync] cleared job references after cancellation"
         )
 
     async def _verify_mount(
@@ -394,6 +435,16 @@ class SyncTaskHandler(BaseTaskHandler):
                 i += 1
 
         return errors
+
+    async def _add_active_job(self, task_id: str, job_name: str, message: str) -> None:
+        updated = await self.state_store.add_active_job(task_id, job_name, message)
+        if updated:
+            logger.info("[Task %s] added active job %s", task_id, job_name)
+
+    async def _remove_active_job(self, task_id: str, job_name: str, message: str) -> None:
+        updated = await self.state_store.remove_active_job(task_id, job_name, message)
+        if updated:
+            logger.info("[Task %s] removed active job %s", task_id, job_name)
 
 
 __all__ = ["SyncTaskHandler"]

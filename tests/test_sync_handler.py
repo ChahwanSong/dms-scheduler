@@ -14,7 +14,7 @@ from app.services.handlers.sync import SyncTaskHandler
     ],
 )
 async def test_check_format_sync_invalid_directory_messages(src, dst, expected_path):
-    handler = SyncTaskHandler(job_runner=None)
+    handler = SyncTaskHandler(job_runner=None, state_store=None)
     request = TaskRequest(
         task_id="t1",
         service="sync",
