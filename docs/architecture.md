@@ -7,7 +7,7 @@
 - **Models (`app/models`)**: Task payloads, status enums, and persisted task state with timestamps, logs, priority, and results.
 
 ## Redis schema
-- Tasks: `task:{task_id}` → JSON document containing `task_id`, `service`, `user_id`, `parameters`, `status`, `logs`, `result`, `priority`, and timestamps.
+- Tasks: `task:{task_id}` → JSON document containing `task_id`, `service`, `user_id`, `parameters`, `status`, `logs`, `result`, `priority`, `active_jobs`, and timestamps.
 - Indices maintained by the shared repository for querying: `index:tasks` (all task IDs), `index:service:{service}` (IDs per service), `index:service:{service}:users` (users per service), and `index:service:{service}:user:{user_id}` (IDs per service/user). TTLs mirror the task TTL to keep indices in sync.
 - Metadata used for cleanup: `task:{task_id}:metadata` contains `service` and `user_id` and follows the same TTL.
 - Blocking flags:
@@ -21,8 +21,11 @@ The scheduler does **not** subscribe to Redis key expiration events; `dms-fronte
    - Validates payload and checks global/user block flags.
    - Sets the task status to `dispatching` and logs the action; missing task IDs return 404 because records must already exist in Redis from `dms-frontend`.
    - Launches an async worker (`TaskExecutor`) that transitions the task through `running` → `completed` (or `failed`) and writes `pod_status` / `launcher_output` into `result`.
+   - Each handler registers created Kubernetes job names under `active_jobs` in Redis so cancellation survives scheduler restarts.
 2. **Cancel task** (`POST /tasks/cancel`):
-   - Updates the task status to `cancelled` and records the log entry.
+   - Verifies the request matches the stored task `service` and `user_id`; mismatches return a 403.
+   - Marks the task `cancel_requested`, deletes any tracked Kubernetes jobs, clears `active_jobs`, and appends log entries for transparency.
+   - If the running handler surfaces job failures after cancellation, the executor translates them into task cancellation rather than a regular failure.
 3. **Task controls** (`/tasks/*`):
    - Priority updates write to task state and append a log entry.
    - Blocking APIs toggle global or per-user flags that gate new submissions.

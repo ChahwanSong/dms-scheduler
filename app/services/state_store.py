@@ -87,6 +87,53 @@ class StateStore:
             await repository.save(task)
             return task
 
+    async def add_active_job(
+        self, task_id: str, job_name: str, message: str | None = None
+    ) -> TaskRecord | None:
+        repository = await self._get_repository()
+        async with self._lock:
+            task = await repository.get(task_id)
+            if not task:
+                return None
+            if job_name not in task.active_jobs:
+                task.active_jobs.append(job_name)
+            task.updated_at = now()
+            if message:
+                task.logs.append(format_log_entry(message))
+            await repository.save(task)
+            return task
+
+    async def remove_active_job(
+        self, task_id: str, job_name: str, message: str | None = None
+    ) -> TaskRecord | None:
+        repository = await self._get_repository()
+        async with self._lock:
+            task = await repository.get(task_id)
+            if not task:
+                return None
+            if job_name in task.active_jobs:
+                task.active_jobs.remove(job_name)
+            task.updated_at = now()
+            if message:
+                task.logs.append(format_log_entry(message))
+            await repository.save(task)
+            return task
+
+    async def clear_active_jobs(
+        self, task_id: str, message: str | None = None
+    ) -> TaskRecord | None:
+        repository = await self._get_repository()
+        async with self._lock:
+            task = await repository.get(task_id)
+            if not task:
+                return None
+            task.active_jobs = []
+            task.updated_at = now()
+            if message:
+                task.logs.append(format_log_entry(message))
+            await repository.save(task)
+            return task
+
     async def set_block_all(self, blocked: bool) -> BlockStatus:
         status = await self.get_block_status()
         status.blocked = blocked

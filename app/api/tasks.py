@@ -3,6 +3,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 
 from ..models.schemas import CancelRequest, TaskRequest, TaskStatus
 from ..services.errors import (
+    TaskCancelForbiddenError,
     TaskInvalidDirectoryError,
     TaskInvalidParametersError,
     TaskNotFoundError,
@@ -50,7 +51,9 @@ async def cancel_task(
 ):
     executor = TaskExecutor(state_store)
     try:
-        state = await executor.cancel_task(payload.task_id)
+        state = await executor.cancel_task(payload)
     except TaskNotFoundError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except TaskCancelForbiddenError as exc:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
     return {"task_id": payload.task_id, "status": state.status}

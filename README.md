@@ -5,6 +5,7 @@ DMS Scheduler is a FastAPI-based backend for orchestrating Data Moving Service (
 ## Overview
 - Receives task submissions from `dms-frontend` and updates task metadata (status, logs, parameters, results) in Redis.
 - Executes work asynchronously (placeholder execution prints the payload) and updates task state as it runs.
+- Tracks Kubernetes jobs associated with a task in Redis so cancellation survives restarts and can be routed to the right workload.
 - Supports task cancellation, priority changes, and administrative blocking of incoming requests.
 - All APIs are exposed via FastAPI and designed for Kubernetes-friendly logging and configuration through environment variables.
 
@@ -69,6 +70,8 @@ python -m app.main --host 127.0.0.1 --port 8000
 - `GET /healthz`: Liveness check.
 
 Task lifecycle states are persisted in Redis and updated as the scheduler runs (pending → dispatching → running → completed/failed/cancelled). If a task ID has not been pre-registered by `dms-frontend`, the scheduler returns a 404 instead of implicitly creating the record.
+
+Cancellation requests are matched against the stored `service` and `user_id` for safety. If a match is found, the scheduler records a `cancel_requested` status, relays the request to the handler, and removes any persisted Kubernetes job references as each job is deleted. When the handler observes the cancelled jobs completing or failing, it records the events in task logs so the lifecycle is auditable.
 
 ## Usage examples
 Practical examples (curl and Python) are available in the [`test`](test) directory:

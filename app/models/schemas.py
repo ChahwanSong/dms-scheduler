@@ -62,6 +62,7 @@ class TaskRecord(BaseModel):
     logs: list[str] = Field(default_factory=list)
     result: TaskResult = Field(default_factory=TaskResult)
     priority: PriorityLevel = PriorityLevel.low
+    active_jobs: list[str] = Field(default_factory=list)
 
     @field_serializer("created_at", "updated_at")
     def serialize_datetimes(self, value: datetime) -> str:

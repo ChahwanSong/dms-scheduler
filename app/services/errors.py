@@ -17,6 +17,14 @@ class TaskNotMatchedError(Exception):
         super().__init__(msg)
 
 
+class TaskCancelForbiddenError(Exception):
+    """Raised when a cancel request does not match the stored task identity."""
+
+    def __init__(self, task_id: str, msg: str):
+        self.task_id = task_id
+        super().__init__(msg)
+
+
 class TaskUnsupportedServiceError(Exception):
     """Raised when the requested service is not supported by the executor."""
 
@@ -69,6 +77,7 @@ __all__ = [
     "TaskInvalidParametersError",
     "TaskJobError",
     "TaskNotFoundError",
+    "TaskCancelForbiddenError",
     "TaskNotMatchedError",
     "TaskTemplateRenderError",
     "TaskUnsupportedServiceError",

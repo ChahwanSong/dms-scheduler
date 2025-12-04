@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
-from fastapi import HTTPException
+from fastapi import HTTPException, status
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -181,6 +181,13 @@ def stub_sync_execution(monkeypatch):
 
     monkeypatch.setattr(SyncTaskHandler, "execute", _fake_execute)
 
+    async def _fake_cancel(self, request, state=None):
+        store = deps.get_state_store()
+        await store.clear_active_jobs(request.task_id, "cancelled in tests")
+        await store.append_log(request.task_id, "[sync] cancellation stub")
+
+    monkeypatch.setattr(SyncTaskHandler, "cancel", _fake_cancel)
+
 
 @pytest.mark.anyio("asyncio")
 async def test_submit_task_and_completion(state_store):
@@ -232,11 +239,39 @@ async def test_cancel_task(state_store):
 
     await submit_task(payload, state_store=state_store)
     await asyncio.sleep(0.05)
+    await state_store.add_active_job(payload.task_id, "verifier-11", "test job registered")
     cancel_request = CancelRequest(task_id=payload.task_id, service=payload.service, user_id=payload.user_id)
     response = await cancel_task(cancel_request, state_store=state_store)
     assert response["status"] == TaskStatus.cancel_requested
     state = await state_store.load_task("11")
     assert state.status == TaskStatus.cancel_requested
+    assert state.active_jobs == []
+
+
+@pytest.mark.anyio("asyncio")
+async def test_cancel_task_forbidden_on_mismatch(state_store):
+    payload = TaskRequest(
+        task_id="13",
+        service="sync",
+        user_id="root",
+        parameters={"src": "/pvs/a", "dst": "/pvs/b"},
+    )
+    preregistered = TaskRecord(
+        task_id=payload.task_id,
+        service=payload.service,
+        user_id=payload.user_id,
+        parameters=payload.parameters,
+        status=TaskStatus.pending,
+    )
+    await deps.get_state_store().save_task(preregistered)
+
+    await submit_task(payload, state_store=state_store)
+
+    cancel_request = CancelRequest(task_id=payload.task_id, service=payload.service, user_id="other")
+    with pytest.raises(HTTPException) as exc:
+        await cancel_task(cancel_request, state_store=state_store)
+
+    assert exc.value.status_code == status.HTTP_403_FORBIDDEN
 
 
 @pytest.mark.anyio("asyncio")
