@@ -22,9 +22,11 @@ from app.models.schemas import (
     PriorityLevel,
     PriorityRequest,
     TaskRecord,
+    TaskResult,
     TaskRequest,
     TaskStatus,
 )
+from app.services.handlers.sync import SyncTaskHandler
 from app.services.state_store import StateStore
 
 
@@ -164,9 +166,22 @@ def anyio_backend():
     return "asyncio"
 
 
+@pytest.fixture(autouse=True)
+def stub_sync_execution(monkeypatch):
+    async def _fake_execute(self, request):
+        return TaskResult(pod_status="Succeeded", launcher_output="stub")
+
+    monkeypatch.setattr(SyncTaskHandler, "execute", _fake_execute)
+
+
 @pytest.mark.anyio("asyncio")
 async def test_submit_task_and_completion(state_store):
-    payload = TaskRequest(task_id="10", service="sync", user_id="alice", parameters={"src": "/a", "dst": "/b"})
+    payload = TaskRequest(
+        task_id="10",
+        service="sync",
+        user_id="root",
+        parameters={"src": "/pvs/a", "dst": "/pvs/b"},
+    )
     preregistered = TaskRecord(
         task_id=payload.task_id,
         service=payload.service,
@@ -192,7 +207,12 @@ async def test_submit_task_and_completion(state_store):
 
 @pytest.mark.anyio("asyncio")
 async def test_cancel_task(state_store):
-    payload = TaskRequest(task_id="11", service="sync", user_id="bob", parameters={"src": "a", "dst": "b"})
+    payload = TaskRequest(
+        task_id="11",
+        service="sync",
+        user_id="root",
+        parameters={"src": "/pvs/a", "dst": "/pvs/b"},
+    )
     preregistered = TaskRecord(
         task_id=payload.task_id,
         service=payload.service,
@@ -213,7 +233,12 @@ async def test_cancel_task(state_store):
 
 @pytest.mark.anyio("asyncio")
 async def test_priority_update(state_store):
-    payload = TaskRequest(task_id="12", service="sync", user_id="alice", parameters={"src": "x", "dst": "y"})
+    payload = TaskRequest(
+        task_id="12",
+        service="sync",
+        user_id="root",
+        parameters={"src": "/pvs/x", "dst": "/pvs/y"},
+    )
     preregistered = TaskRecord(
         task_id=payload.task_id,
         service=payload.service,
@@ -237,7 +262,12 @@ async def test_blocking_behavior(state_store):
     block_response = await block_all(state_store=state_store)
     assert block_response["blocked"] is True
 
-    payload = TaskRequest(task_id="blocked", service="sync", user_id="alice", parameters={})
+    payload = TaskRequest(
+        task_id="blocked",
+        service="sync",
+        user_id="root",
+        parameters={"src": "/pvs/a", "dst": "/pvs/b"},
+    )
     preregistered = TaskRecord(
         task_id=payload.task_id,
         service=payload.service,

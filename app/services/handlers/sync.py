@@ -56,26 +56,22 @@ class SyncTaskHandler(BaseTaskHandler):
         params = request.parameters or {}
         task_id = request.task_id
         user_id = request.user_id
-        user_info = pwd.getpwnam(user_id)
-        uid = user_info.pw_uid  # UID
-        gid = user_info.pw_gid  # GID
+        pwd.getpwnam(user_id)
         src: str = params.get("src")
         dst: str = params.get("dst")
-        options: str = params.get("options", "")
-
         pod_status: dict[str, str] = {}
         logs: dict[str, str] = {}
 
         src_mount_path, src_info = match_allowed_directory(src)
         if src_info is None:
             raise TaskInvalidDirectoryError(
-                task_id, src, f"Invalid directory to service {request.service}"
+                task_id, src, f"Invalid path to service '{request.service}'"
             )
 
         dst_mount_path, dst_info = match_allowed_directory(dst)
         if dst_info is None:
             raise TaskInvalidDirectoryError(
-                task_id, dst, f"Invalid directory to service {request.service}"
+                task_id, dst, f"Invalid path to service '{request.service}'"
             )
 
         verifier_obj = self._render_template(
@@ -152,7 +148,8 @@ class SyncTaskHandler(BaseTaskHandler):
             logger.info("[Task %s] 'mount' check of %s => %s", task_id, mount_point, output)
             checks.append(PodMountCheckResult(name=pod_name, output=output))
 
-        if not all(item.output == "__TRUE__" for item in checks):
+        is_mount_verified = all(item.output == "__TRUE__" for item in checks)
+        if not is_mount_verified:
             raise TaskJobError(task_id, f"Invalid mount point: {checks}")
 
     async def _verify_pathtype(
@@ -177,7 +174,11 @@ class SyncTaskHandler(BaseTaskHandler):
                     ["/bin/bash", "-c", PATHTYPE_VERIFY_CMD.format(target_path=target_path)],
                 )
             ).strip()
-            logger.info("[Task %s] %s type => %s", task_id, type_path, output)
+            if type_path == "src":
+                logger.info("[Task %s] src type => %s", task_id, output)
+
+            if type_path == "dst":
+                logger.info("[Task %s] dst type => %s", task_id, output)
             checks.append(PodPathCheckResult(name=pod_name, output=output))
 
         src_path_type = next((r.output for r in checks if "src-checker" in r.name), None)
@@ -203,7 +204,7 @@ class SyncTaskHandler(BaseTaskHandler):
         elif src_path_type == "__DIR__":
             ownership_verify_src_cmd = OWNERSHIP_VERIFY_SRC_DIR_CMD
             if not src_path.startswith("/") or src_path.count("/") == 1 or src_path in ALLOWED_DIRECTORIES:
-                raise TaskInvalidDirectoryError(task_id, src_path, "Invalid path")
+                raise TaskInvalidDirectoryError(task_id, src_path, "Not allowed path")
         else:
             raise TaskInvalidDirectoryError(
                 task_id, src_path, f"Unknown src path type: {src_path_type}"
@@ -211,7 +212,7 @@ class SyncTaskHandler(BaseTaskHandler):
 
         if dst_path_type == "__DIR__":
             if not dst_path.startswith("/") or dst_path.count("/") == 1 or dst_path in ALLOWED_DIRECTORIES:
-                raise TaskInvalidDirectoryError(task_id, dst_path, "Invalid path")
+                raise TaskInvalidDirectoryError(task_id, dst_path, "Not allowed path")
         else:
             raise TaskInvalidDirectoryError(task_id, dst_path, f"Dst path is not a directory - {dst_path_type}")
 
@@ -317,14 +318,14 @@ class SyncTaskHandler(BaseTaskHandler):
             _, src_info = match_allowed_directory(src)
             if src_info is None:
                 raise TaskInvalidDirectoryError(
-                    request.task_id, src, f"Invalid directory to service {request.service}"
+                    request.task_id, src, f"Invalid path to service '{request.service}'"
                 )
 
         if dst is not None:
             _, dst_info = match_allowed_directory(dst)
             if dst_info is None:
                 raise TaskInvalidDirectoryError(
-                    request.task_id, dst, f"Invalid directory to service {request.service}"
+                    request.task_id, dst, f"Invalid path to service '{request.service}'"
                 )
 
     def _validate_dsync_options(self, options: str) -> list[str]:

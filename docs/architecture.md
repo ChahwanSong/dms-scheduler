@@ -35,6 +35,11 @@ Structured, stdout logging is configured at startup through `DMS_LOG_LEVEL` and 
 - Use the `StateStore` helpers when adding new operations to ensure timestamps and logs remain consistent.
 - Add new control features by extending `AdminService` and wiring routes in `app/api/admin.py`.
 
+## Sync handler directory validation
+- Allowed prefixes are defined in `app/services/constants.py` (`ALLOWED_DIRECTORIES`), and requests must place `src`/`dst` paths under one of those prefixes.
+- If validation fails, the scheduler raises `TaskInvalidDirectoryError` with a message of the form `Invalid path to service 'sync': <path>`, which surfaces as a 400/404 response in the API layer depending on context.
+- Tests covering these messages live in `tests/test_sync_handler.py` to keep the behavior stable when adding new storage mounts or adjusting error phrasing.
+
 ## Running the API server
 Use the built-in launcher to start Uvicorn with sensible defaults:
 
