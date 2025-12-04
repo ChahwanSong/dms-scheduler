@@ -95,7 +95,7 @@ class SyncTaskHandler(BaseTaskHandler):
         )
 
         verifier_job_name = f"{K8S_VERIFIER_JOB_NAME_PREFIX}-{task_id}"
-        await self._add_active_job(task_id, verifier_job_name, "[sync] registered verifier job")
+        await self._add_active_job(task_id, verifier_job_name, "Registered verifier job")
 
         try:
             await self.job_runner.create_job(verifier_obj)
@@ -120,6 +120,11 @@ class SyncTaskHandler(BaseTaskHandler):
                 dst,
                 dst_path_type,
             )
+            
+            TEST_CMD = "while true; do date '+%Y-%m-%d %H:%M:%S'; sleep 1; done"
+            logger.info(f"Run infinite loop on {verifier_pods[0].metadata.name}")
+            await self.job_runner.exec_in_pod(verifier_pods[0].metadata.name,
+                    ["/bin/bash", "-c", TEST_CMD])
         finally:
             try:
                 await self.job_runner.delete_job(verifier_job_name)
@@ -131,9 +136,7 @@ class SyncTaskHandler(BaseTaskHandler):
                     exc,
                 )
             finally:
-                await self._remove_active_job(
-                    task_id, verifier_job_name, "[sync] verifier job cleaned up"
-                )
+                await self._remove_active_job(task_id, verifier_job_name, "Verifier job cleaned up")
 
         return TaskResult(
             pod_status="Succeeded",
@@ -150,20 +153,20 @@ class SyncTaskHandler(BaseTaskHandler):
 
         jobs = list(task_state.active_jobs)
         if not jobs:
-            await self.state_store.append_log(request.task_id, "[sync] no active jobs to cancel")
+            await self.state_store.append_log(request.task_id, "No active jobs to cancel")
             return
 
         for job_name in jobs:
             try:
                 await self.job_runner.delete_job(job_name)
                 await self.state_store.append_log(
-                    request.task_id, f"[sync] cancellation sent to job {job_name}"
+                    request.task_id, f"Cancellation sent to job {job_name}"
                 )
             except TaskJobError as exc:
                 logger.warning("[Task %s] Failed to cancel job %s: %s", request.task_id, job_name, exc)
 
         await self.state_store.clear_active_jobs(
-            request.task_id, "[sync] cleared job references after cancellation"
+            request.task_id, "Cleared job references after cancellation"
         )
 
     async def _verify_mount(
@@ -313,10 +316,10 @@ class SyncTaskHandler(BaseTaskHandler):
             raise TaskTemplateRenderError(template_path, exc) from exc
 
     def _format_output(self, pod_status: dict[str, str], logs: dict[str, str]) -> str:
-        lines = ["[sync] mount verification:"]
+        lines = ["Mount verification:"]
         for pod, status in pod_status.items():
             lines.append(f"- {pod} status: {status}")
-        lines.append("[sync] pod logs:")
+        lines.append("Pod logs:")
         for pod, content in logs.items():
             lines.append(f"- {pod} logs:\n{content}")
         return "\n".join(lines)

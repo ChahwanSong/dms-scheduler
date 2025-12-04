@@ -118,7 +118,7 @@ class TaskExecutor:
             raise TaskUnsupportedServiceError(request.task_id, msg)
 
         updated = await self._transition(
-            request.task_id, TaskStatus.cancel_requested, "Cancellation requested"
+            request.task_id, TaskStatus.cancel_requested, "Cancellation requested at scheduler"
         )
         await handler.cancel(request, updated)
         return await self.state_store.get_task(request.task_id)
