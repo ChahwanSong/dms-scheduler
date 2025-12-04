@@ -148,6 +148,14 @@ class InMemoryRedis:
     async def exists(self, key: str) -> bool:
         return key in self._data
 
+    async def ping(self) -> bool:
+        return True
+
+
+class FailingRedis(InMemoryRedis):
+    async def ping(self) -> bool:
+        raise ConnectionError("Redis unreachable")
+
 
 @pytest.fixture
 def state_store(monkeypatch):
@@ -295,3 +303,23 @@ async def test_help_endpoint(state_store):
 
     assert result["timezone"] == "UTC"
     assert "<iso-timestamp>,<message>" in result["log_format"]
+
+
+@pytest.mark.anyio("asyncio")
+async def test_health_endpoint_checks_redis(state_store):
+    app = create_app(client=state_store.redis)
+    health_route = next(route for route in app.routes if getattr(route, "path", "") == "/healthz")
+    result = await health_route.endpoint()
+
+    assert result == {"status": "ok", "redis": "ok"}
+
+
+@pytest.mark.anyio("asyncio")
+async def test_health_endpoint_handles_redis_failure():
+    app = create_app(client=FailingRedis())
+    health_route = next(route for route in app.routes if getattr(route, "path", "") == "/healthz")
+
+    with pytest.raises(HTTPException) as exc:
+        await health_route.endpoint()
+
+    assert exc.value.status_code == 503

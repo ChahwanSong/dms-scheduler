@@ -56,3 +56,10 @@ class RedisClient:
             await self.connect()
         assert self.read_client
         return bool(await self.read_client.exists(key))
+
+    async def ping(self) -> bool:
+        if self.read_client is None:
+            await self.connect()
+        assert self.read_client
+        response = await self.read_client.ping()
+        return bool(response)
