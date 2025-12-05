@@ -40,7 +40,7 @@ async def submit_task(
     except TaskInvalidDirectoryError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
 
-    logger.info("Accepted task %s", payload.task_id)
+    logger.info(f"Accepted task {payload.task_id}")
     return {"task_id": payload.task_id, "status": TaskStatus.dispatching}
 
 

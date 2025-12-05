@@ -63,7 +63,7 @@ class TaskExecutor:
         try:
             await handler.validate(request)
         except (TaskInvalidParametersError, TaskInvalidDirectoryError) as exc:
-            logger.error("Task %s failed: %s", request.task_id, exc)
+            logger.error(f"Task {request.task_id} failed: {exc}")
             await self._transition(request.task_id, TaskStatus.failed, str(exc))
             raise
 
@@ -97,14 +97,14 @@ class TaskExecutor:
             TaskTemplateRenderError,
             TaskJobError,
         ) as exc:
-            logger.error("Task %s failed: %s", task_id, exc)
+            logger.error(f"Task {task_id} failed: {exc}")
             state = await self.state_store.get_task(task_id)
             if state and state.status in (TaskStatus.cancel_requested, TaskStatus.cancelled):
                 await self._transition(task_id, TaskStatus.cancelled, f"Task cancelled: {exc}")
             else:
                 await self._transition(task_id, TaskStatus.failed, str(exc))
         except Exception as exc:  # pragma: no cover - defensive
-            logger.exception("Task %s failed unexpectedly", task_id)
+            logger.exception(f"Task {task_id} failed unexpectedly")
             await self._transition(task_id, TaskStatus.failed, f"Unexpected error: {exc}")
 
     async def cancel_task(self, request: CancelRequest):

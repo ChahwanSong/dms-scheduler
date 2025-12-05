@@ -12,7 +12,7 @@ class AdminService:
     async def set_priority(self, task_id: str, priority: PriorityLevel) -> bool:
         state = await self.state_store.set_priority(task_id, priority, f"Priority set to {priority.value}")
         if state:
-            logger.info("Priority for task %s set to %s", task_id, priority.value)
+            logger.info(f"Priority for task {task_id} set to {priority.value}")
             return True
         return False
 
@@ -26,8 +26,8 @@ class AdminService:
 
     async def block_user(self, user_id: str) -> None:
         await self.state_store.set_block_for_user(user_id, True)
-        logger.warning("User %s blocked", user_id)
+        logger.warning(f"User {user_id} blocked")
 
     async def enable_user(self, user_id: str) -> None:
         await self.state_store.set_block_for_user(user_id, False)
-        logger.info("User %s enabled", user_id)
+        logger.info(f"User {user_id} enabled")

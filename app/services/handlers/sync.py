@@ -144,11 +144,10 @@ class SyncTaskHandler(BaseTaskHandler):
                 await self._cleanup_job(task_id, verifier_job_name, "Verifier job cleaned up")
             except TaskJobError:
                 logger.warning(
-                    "[Task %s] Failed to clean up verifier job %s",
-                    task_id,
-                    verifier_job_name,
+                    f"[Task {task_id}] Failed to clean up verifier job {verifier_job_name}"
                 )
 
+        await self._ensure_task_running(task_id)
         return TaskResult(
             pod_status="Succeeded",
             launcher_output=self._format_output(pod_status, logs),
@@ -174,7 +173,7 @@ class SyncTaskHandler(BaseTaskHandler):
                 )
             except TaskJobError as exc:
                 logger.warning(
-                    "[Task %s] Failed to cancel job %s: %s", request.task_id, job_name, exc
+                    f"[Task {request.task_id}] Failed to cancel job {job_name}: {exc}"
                 )
 
     async def _verify_mount(
@@ -198,7 +197,9 @@ class SyncTaskHandler(BaseTaskHandler):
                     ["/bin/bash", "-c", MOUNT_VERIFY_CMD.format(mount_point=mount_point)],
                 )
             ).strip() or "__NULL__"
-            logger.info("[Task %s] 'mount' check of %s => %s", task_id, mount_point, output)
+            logger.info(
+                f"[Task {task_id}] 'mount' check of {mount_point} => {output}"
+            )
             checks.append(PodMountCheckResult(name=pod_name, output=output))
 
         is_mount_verified = all(item.output == "__TRUE__" for item in checks)
@@ -229,10 +230,10 @@ class SyncTaskHandler(BaseTaskHandler):
                 )
             ).strip() or "__NULL__"
             if type_path == "src":
-                logger.info("[Task %s] src type => %s", task_id, output)
+                logger.info(f"[Task {task_id}] src type => {output}")
 
             if type_path == "dst":
-                logger.info("[Task %s] dst type => %s", task_id, output)
+                logger.info(f"[Task {task_id}] dst type => {output}")
             checks.append(PodPathCheckResult(name=pod_name, output=output))
 
         src_path_type = next((r.output for r in checks if "src-checker" in r.name), None)
@@ -290,7 +291,7 @@ class SyncTaskHandler(BaseTaskHandler):
                     ["/bin/bash", "-c", target_cmd.format(user_id=user_id, target_path=target_path)],
                 )
             ).strip() or "__NULL__"
-            logger.info("[Task %s] %s ownership => %s", task_id, type_path, output)
+            logger.info(f"[Task {task_id}] {type_path} ownership => {output}")
             checks.append(PodPathCheckResult(name=pod_name, output=output))
 
         src_ownership = next((r.output for r in checks if "src-checker" in r.name), None)
@@ -315,7 +316,7 @@ class SyncTaskHandler(BaseTaskHandler):
             try:
                 logs[pod_name] = await self.job_runner.get_pod_logs(pod_name)
             except TaskJobError as exc:
-                logger.warning("Failed to read logs from %s: %s", pod_name, exc)
+                logger.warning(f"Failed to read logs from {pod_name}: {exc}")
         return logs
 
     async def _ensure_task_running(self, task_id: str) -> None:
@@ -325,7 +326,7 @@ class SyncTaskHandler(BaseTaskHandler):
 
         status_label = getattr(state, "status", "unknown")
         message = f"Task no longer running (status={status_label}); stopping execution"
-        logger.error("[Task %s] %s", task_id, message)
+        logger.error(f"[Task {task_id}] {message}")
         await self.state_store.append_log(task_id, message)
         raise TaskJobError(task_id, message)
 
@@ -466,7 +467,7 @@ class SyncTaskHandler(BaseTaskHandler):
         state = await self.state_store.get_task(task_id)
         if not state or job_name not in state.active_jobs:
             logger.info(
-                "[Task %s] Job %s already cleaned up; skipping cleanup", task_id, job_name
+                f"[Task {task_id}] Job {job_name} already cleaned up; skipping cleanup"
             )
             return False
 
@@ -484,12 +485,12 @@ class SyncTaskHandler(BaseTaskHandler):
     async def _add_active_job(self, task_id: str, job_name: str, message: str) -> None:
         updated = await self.state_store.add_active_job(task_id, job_name, message)
         if updated:
-            logger.info("[Task %s] added active job %s", task_id, job_name)
+            logger.info(f"[Task {task_id}] added active job {job_name}")
 
     async def _remove_active_job(self, task_id: str, job_name: str, message: str) -> None:
         updated = await self.state_store.remove_active_job(task_id, job_name, message)
         if updated:
-            logger.info("[Task %s] removed active job %s", task_id, job_name)
+            logger.info(f"[Task {task_id}] removed active job {job_name}")
 
 
 __all__ = ["SyncTaskHandler"]
