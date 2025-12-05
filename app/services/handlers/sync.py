@@ -141,16 +141,13 @@ class SyncTaskHandler(BaseTaskHandler):
                     ["/bin/bash", "-c", TEST_CMD])
         finally:
             try:
-                await self.job_runner.delete_job(verifier_job_name)
-            except TaskJobError as exc:
+                await self._cleanup_job(task_id, verifier_job_name, "Verifier job cleaned up")
+            except TaskJobError:
                 logger.warning(
-                    "[Task %s] Failed to delete verifier job %s: %s",
+                    "[Task %s] Failed to clean up verifier job %s",
                     task_id,
                     verifier_job_name,
-                    exc,
                 )
-            finally:
-                await self._remove_active_job(task_id, verifier_job_name, "Verifier job cleaned up")
 
         return TaskResult(
             pod_status="Succeeded",
@@ -172,16 +169,13 @@ class SyncTaskHandler(BaseTaskHandler):
 
         for job_name in jobs:
             try:
-                await self.job_runner.delete_job(job_name)
-                await self.state_store.append_log(
-                    request.task_id, f"Cancellation sent to job {job_name}"
+                await self._cleanup_job(
+                    request.task_id, job_name, f"Cancellation sent to job {job_name}"
                 )
             except TaskJobError as exc:
-                logger.warning("[Task %s] Failed to cancel job %s: %s", request.task_id, job_name, exc)
-
-        await self.state_store.clear_active_jobs(
-            request.task_id, "Cleared job references after cancellation"
-        )
+                logger.warning(
+                    "[Task %s] Failed to cancel job %s: %s", request.task_id, job_name, exc
+                )
 
     async def _verify_mount(
         self, task_id: str, pods: list[V1Pod], src_mount_path: str, dst_mount_path: str
@@ -467,6 +461,25 @@ class SyncTaskHandler(BaseTaskHandler):
                 i += 1
 
         return errors
+
+    async def _cleanup_job(self, task_id: str, job_name: str, message: str) -> bool:
+        state = await self.state_store.get_task(task_id)
+        if not state or job_name not in state.active_jobs:
+            logger.info(
+                "[Task %s] Job %s already cleaned up; skipping cleanup", task_id, job_name
+            )
+            return False
+
+        await self._remove_active_job(task_id, job_name, message)
+        try:
+            await self.job_runner.delete_job(job_name)
+        except TaskJobError:
+            await self._add_active_job(
+                task_id, job_name, f"Re-added {job_name} after failed cleanup attempt"
+            )
+            raise
+
+        return True
 
     async def _add_active_job(self, task_id: str, job_name: str, message: str) -> None:
         updated = await self.state_store.add_active_job(task_id, job_name, message)
