@@ -38,7 +38,7 @@ class KubernetesClients:
 
         self.core_api = client.CoreV1Api()
         self.custom_api = client.CustomObjectsApi()
-        logger.info("Kubernetes config loaded (%s)", self.config_source)
+        logger.info(f"Kubernetes config loaded ({self.config_source})")
 
 
 @dataclass
@@ -80,9 +80,9 @@ class VolcanoJobRunner:
 
         try:
             await asyncio.to_thread(_create)
-            logger.info("Created VolcanoJob %s", job_name)
+            logger.info(f"Created VolcanoJob {job_name}")
         except ApiException as exc:  # pragma: no cover - network side effects
-            logger.error("Failed to create VolcanoJob %s: %s", job_name, exc)
+            logger.error(f"Failed to create VolcanoJob {job_name}: {exc}")
             raise TaskJobError(job_name, f"Failed to create Volcano job: {exc}") from exc
 
     async def delete_job(self, job_name: str) -> None:
@@ -100,12 +100,12 @@ class VolcanoJobRunner:
 
         try:
             await asyncio.to_thread(_delete)
-            logger.info("Deleted VolcanoJob %s", job_name)
+            logger.info(f"Deleted VolcanoJob {job_name}")
         except ApiException as exc:  # pragma: no cover - network side effects
             if exc.status == 404:
-                logger.warning("VolcanoJob %s already removed", job_name)
+                logger.warning(f"VolcanoJob {job_name} already removed")
                 return
-            logger.error("Failed to delete VolcanoJob %s: %s", job_name, exc)
+            logger.error(f"Failed to delete VolcanoJob {job_name}: {exc}")
             raise TaskJobError(job_name, f"Failed to delete job: {exc}") from exc
 
     async def wait_for_pods_ready(

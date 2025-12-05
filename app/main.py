@@ -20,11 +20,11 @@ redis_client: RedisClient | None = None
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     if redis_client:
-        logger.info("Starting %s", settings.service_name)
+        logger.info(f"Starting {settings.service_name}")
         await redis_client.connect()
     yield
     if redis_client:
-        logger.info("Stopping %s", settings.service_name)
+        logger.info(f"Stopping {settings.service_name}")
         await redis_client.close()
 
 
