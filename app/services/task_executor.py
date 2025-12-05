@@ -86,7 +86,11 @@ class TaskExecutor:
 
             await self._transition(task_id, TaskStatus.completed, "Task completed")
         except asyncio.CancelledError:
-            await self._transition(task_id, TaskStatus.cancelled, "Task cancelled")
+            await self._transition(
+                task_id,
+                TaskStatus.cancelled,
+                "Task cancelled abnormally by asyncio",
+            )
         except (
             TaskInvalidParametersError,
             TaskInvalidDirectoryError,
@@ -95,7 +99,7 @@ class TaskExecutor:
         ) as exc:
             logger.error("Task %s failed: %s", task_id, exc)
             state = await self.state_store.get_task(task_id)
-            if state and state.status == TaskStatus.cancel_requested:
+            if state and state.status in (TaskStatus.cancel_requested, TaskStatus.cancelled):
                 await self._transition(task_id, TaskStatus.cancelled, f"Task cancelled: {exc}")
             else:
                 await self._transition(task_id, TaskStatus.failed, str(exc))
