@@ -197,7 +197,7 @@ class SyncTaskHandler(BaseTaskHandler):
                     pod_name,
                     ["/bin/bash", "-c", MOUNT_VERIFY_CMD.format(mount_point=mount_point)],
                 )
-            ).strip()
+            ).strip() or "__NULL__"
             logger.info("[Task %s] 'mount' check of %s => %s", task_id, mount_point, output)
             checks.append(PodMountCheckResult(name=pod_name, output=output))
 
@@ -227,7 +227,7 @@ class SyncTaskHandler(BaseTaskHandler):
                     pod_name,
                     ["/bin/bash", "-c", PATHTYPE_VERIFY_CMD.format(target_path=target_path)],
                 )
-            ).strip()
+            ).strip() or "__NULL__"
             if type_path == "src":
                 logger.info("[Task %s] src type => %s", task_id, output)
 
@@ -289,7 +289,7 @@ class SyncTaskHandler(BaseTaskHandler):
                     pod_name,
                     ["/bin/bash", "-c", target_cmd.format(user_id=user_id, target_path=target_path)],
                 )
-            ).strip()
+            ).strip() or "__NULL__"
             logger.info("[Task %s] %s ownership => %s", task_id, type_path, output)
             checks.append(PodPathCheckResult(name=pod_name, output=output))
 
