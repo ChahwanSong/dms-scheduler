@@ -34,7 +34,13 @@ from ..errors import (
 )
 from ..kube import PodMountCheckResult, PodPathCheckResult, VolcanoJobRunner
 from ..state_store import StateStore
-from ...models.schemas import CancelRequest, TaskRecord, TaskRequest, TaskResult
+from ...models.schemas import (
+    CancelRequest,
+    TaskRecord,
+    TaskRequest,
+    TaskResult,
+    TaskStatus,
+)
 from .base import BaseTaskHandler
 
 logger = logging.getLogger(__name__)
@@ -76,6 +82,8 @@ class SyncTaskHandler(BaseTaskHandler):
                 task_id, dst, f"Invalid path to service '{request.service}'"
             )
 
+        await self._ensure_task_running(task_id)
+
         verifier_obj = self._render_template(
             K8S_SYNC_VERIFIER_TEMPLATE,
             {
@@ -98,19 +106,24 @@ class SyncTaskHandler(BaseTaskHandler):
         await self._add_active_job(task_id, verifier_job_name, "Registered verifier job")
 
         try:
+            await self._ensure_task_running(task_id)
             await self.job_runner.create_job(verifier_obj)
+            await self._ensure_task_running(task_id)
             verifier_pods = await self.job_runner.wait_for_pods_ready(
                 label_selector=f"{K8S_VERIFIER_JOB_LABEL}={task_id}",
                 expected=2,
                 timeout=180,
             )
 
+            await self._ensure_task_running(task_id)
             await self._verify_mount(task_id, verifier_pods, src_mount_path, dst_mount_path)
 
+            await self._ensure_task_running(task_id)
             src_path_type, dst_path_type = await self._verify_pathtype(
                 task_id, verifier_pods, src, dst
             )
 
+            await self._ensure_task_running(task_id)
             await self._verify_ownership(
                 task_id,
                 user_id,
@@ -120,8 +133,9 @@ class SyncTaskHandler(BaseTaskHandler):
                 dst,
                 dst_path_type,
             )
-            
+
             TEST_CMD = "while true; do date '+%Y-%m-%d %H:%M:%S'; sleep 1; done"
+            await self._ensure_task_running(task_id)
             logger.info(f"Run infinite loop on {verifier_pods[0].metadata.name}")
             await self.job_runner.exec_in_pod(verifier_pods[0].metadata.name,
                     ["/bin/bash", "-c", TEST_CMD])
@@ -175,6 +189,7 @@ class SyncTaskHandler(BaseTaskHandler):
         checks: list[PodMountCheckResult] = []
 
         for pod in pods:
+            await self._ensure_task_running(task_id)
             pod_name = pod.metadata.name
             if "src-checker" in pod_name:
                 mount_point = src_mount_path
@@ -202,6 +217,7 @@ class SyncTaskHandler(BaseTaskHandler):
         checks: list[PodPathCheckResult] = []
 
         for pod in pods:
+            await self._ensure_task_running(task_id)
             pod_name = pod.metadata.name
             if "src-checker" in pod_name:
                 target_path = src_path
@@ -261,6 +277,7 @@ class SyncTaskHandler(BaseTaskHandler):
             raise TaskInvalidDirectoryError(task_id, dst_path, f"Dst path is not a directory - {dst_path_type}")
 
         for pod in pods:
+            await self._ensure_task_running(task_id)
             pod_name = pod.metadata.name
             if "src-checker" in pod_name:
                 target_path = src_path
@@ -296,15 +313,27 @@ class SyncTaskHandler(BaseTaskHandler):
 
         return src_ownership, dst_ownership
 
-    async def _collect_logs(self, pods: list[V1Pod]) -> dict[str, str]:
+    async def _collect_logs(self, task_id: str, pods: list[V1Pod]) -> dict[str, str]:
         logs: dict[str, str] = {}
         for pod in pods:
+            await self._ensure_task_running(task_id)
             pod_name = pod.metadata.name
             try:
                 logs[pod_name] = await self.job_runner.get_pod_logs(pod_name)
             except TaskJobError as exc:
                 logger.warning("Failed to read logs from %s: %s", pod_name, exc)
         return logs
+
+    async def _ensure_task_running(self, task_id: str) -> None:
+        state = await self.state_store.get_task(task_id)
+        if state and state.status == TaskStatus.running:
+            return
+
+        status_label = getattr(state, "status", "unknown")
+        message = f"Task no longer running (status={status_label}); stopping execution"
+        logger.error("[Task %s] %s", task_id, message)
+        await self.state_store.append_log(task_id, message)
+        raise TaskJobError(task_id, message)
 
     def _render_template(self, template_path: str, context: Dict[str, Any]) -> dict:
         try:
