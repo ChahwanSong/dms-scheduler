@@ -428,18 +428,20 @@ class SyncTaskHandler(BaseTaskHandler):
         await self.state_store.append_log(task_id, message)
         raise TaskJobError(task_id, message)
 
-    async def _get_task_queue_name(self, task_id: str) -> None:
+    async def _get_task_queue_name(self, task_id: str) -> str:
         state = await self.state_store.get_task(task_id)
-        if not state:
-            logger.warning(f"Failed to get a priority of task")
-        
-        priority = state.priority
+        priority = getattr(state, "priority", None)
+
+        if priority is None:
+            logger.warning("Failed to get a priority of task")
+            return K8S_VOLCANO_LOW_PRIO_Q
+
         if priority == "high":
             return K8S_VOLCANO_HIGH_PRIO_Q
-        
+
         if priority != "low":
             logger.warning(f"Invalid input of priority: {priority}")
-        
+
         # default, return a low priority
         return K8S_VOLCANO_LOW_PRIO_Q
         
