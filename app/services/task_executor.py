@@ -100,7 +100,7 @@ class TaskExecutor:
             logger.error(f"Task {task_id} failed: {exc}")
             state = await self.state_store.get_task(task_id)
             if state and state.status in (TaskStatus.cancel_requested, TaskStatus.cancelled):
-                await self._transition(task_id, TaskStatus.cancelled, f"Task cancelled: {exc}")
+                pass
             else:
                 await self._transition(task_id, TaskStatus.failed, str(exc))
         except Exception as exc:  # pragma: no cover - defensive
