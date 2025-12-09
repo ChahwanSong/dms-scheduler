@@ -80,7 +80,7 @@ class TaskExecutor:
             result: TaskResult = await handler.execute(request)
 
             # after confirming the job completion
-            updated = await self.state_store.set_result(task_id, result, "Task finished successfully")
+            updated = await self.state_store.set_result(task_id, result, "Task result updated")
             if not updated:
                 raise TaskNotFoundError(task_id)
 
@@ -100,7 +100,7 @@ class TaskExecutor:
             logger.error(f"Task {task_id} failed: {exc}")
             state = await self.state_store.get_task(task_id)
             if state and state.status in (TaskStatus.cancel_requested, TaskStatus.cancelled):
-                await self._transition(task_id, TaskStatus.cancelled, f"Task cancelled: {exc}")
+                pass
             else:
                 await self._transition(task_id, TaskStatus.failed, str(exc))
         except Exception as exc:  # pragma: no cover - defensive

@@ -128,7 +128,7 @@ class VolcanoJobRunner:
 
                 if failed:
                     names = ", ".join(p.metadata.name for p in failed)
-                    raise TaskJobError(label_selector, f"Verifier pods failed: {names}")
+                    raise TaskJobError(label_selector, f"Pods failed: {names}")
 
                 if len(ready) >= expected:
                     return ready
