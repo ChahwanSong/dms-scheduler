@@ -1,8 +1,8 @@
 """Sync task handler implementation."""
 
 import logging
-import shlex
 import pwd
+import shlex
 from typing import Any, Dict, Optional, Tuple
 
 import yaml
@@ -10,19 +10,19 @@ from jinja2 import Template
 from kubernetes.client import V1Pod
 
 from ..constants import (
-    K8S_SYNC_JOB_LABEL,
-    K8S_SYNC_JOB_NAME_PREFIX,
     K8S_SYNC_D_JOB_TEMPLATE,
-    K8S_SYNC_VERIFIER_TEMPLATE,
     K8S_SYNC_D_JOB_IMAGE,
-    K8S_SYNC_VERIFIER_JOB_LABEL,
-    K8S_SYNC_VERIFIER_JOB_NAME_PREFIX,
-    K8S_SYNC_VERIFIER_JOB_IMAGE,
-    K8S_VOLCANO_HIGH_PRIO_Q,
-    K8S_VOLCANO_LOW_PRIO_Q,
     K8S_SYNC_D_WORKER_HOSTFILE_PATH,
     K8S_SYNC_D_DEFAULT_N_BATCH_FILES,
     K8S_SYNC_D_DEFAULT_N_SLOTS_PER_HOST,
+    K8S_SYNC_VERIFIER_TEMPLATE,
+    K8S_SYNC_VERIFIER_JOB_LABEL,
+    K8S_SYNC_VERIFIER_JOB_NAME_PREFIX,
+    K8S_SYNC_VERIFIER_JOB_IMAGE,
+    K8S_SYNC_JOB_LABEL,
+    K8S_SYNC_JOB_NAME_PREFIX,
+    K8S_VOLCANO_HIGH_PRIO_Q,
+    K8S_VOLCANO_LOW_PRIO_Q,
 )
 from ..cmds import (
     MOUNT_VERIFY_CMD,
@@ -227,7 +227,6 @@ class SyncTaskHandler(BaseTaskHandler):
                     timeout=180,
                 )
                 
-                await self._ensure_task_running(task_id)
                 await self._run_dsync(task_id, sync_pods[0].metadata.name, src, dst, options)
                 
             finally:
@@ -514,32 +513,22 @@ class SyncTaskHandler(BaseTaskHandler):
 
     async def _run_dsync(self, task_id: str, pod_name: str, src_path: str, dst_path: str, options: str):
         
-        # default options to insert
-        if not "batch-files" in options:
-            options += f" --batch-files {K8S_SYNC_D_DEFAULT_N_BATCH_FILES}"
-        if not "direct" in options:
-            options += " --direct"
-        if not "open-noatime" in options:
-            options += " --open-noatime"
+        await self._ensure_task_running(task_id)
+        
+        tokens = self._build_dsync_tokens(options)
     
         dsync_cmd = DSYNC_RUN_CMD.format(
-                    n_slots_per_host=K8S_SYNC_D_DEFAULT_N_SLOTS_PER_HOST,
-                    worker_hostfile=K8S_SYNC_D_WORKER_HOSTFILE_PATH,
-                    options=options,
-                    src_path=src_path,
-                    dst_path=dst_path,
-                    )
+            n_slots_per_host=K8S_SYNC_D_DEFAULT_N_SLOTS_PER_HOST,
+            worker_hostfile=K8S_SYNC_D_WORKER_HOSTFILE_PATH,
+            options=" ".join(shlex.quote(token) for token in tokens),
+            src_path=src_path,
+            dst_path=dst_path,
+        )
         
         # run execution
-        output = (
-            await self.job_runner.exec_in_pod(
-                pod_name, 
-                ["/bin/bash", "-c", dsync_cmd
-                ]
-            )
-        ).strip()
-        
-        print(output)
+        output = (await self.job_runner.exec_in_pod(pod_name, ["/bin/bash", "-c", dsync_cmd])).strip()
+        logger.info("[Task %s] dsync output: %s", task_id, output)
+        await self.state_store.append_log(task_id, "dsync execution completed")
 
     def _validate_dsync_options(self, options: str) -> list[str]:
         errors: list[str] = []
@@ -608,6 +597,18 @@ class SyncTaskHandler(BaseTaskHandler):
 
         return errors
 
+    def _build_dsync_tokens(self, options: str) -> list[str]:
+        tokens = shlex.split(options) if options else []
+
+        if "--batch-files" not in tokens:
+            tokens.extend(["--batch-files", str(K8S_SYNC_D_DEFAULT_N_BATCH_FILES)])
+        if "--direct" not in tokens:
+            tokens.append("--direct")
+        if "--open-noatime" not in tokens:
+            tokens.append("--open-noatime")
+
+        return tokens
+    
     async def _cleanup_job(self, task_id: str, job_name: str, message: str) -> bool:
         state = await self.state_store.get_task(task_id)
         if not state or job_name not in state.active_jobs:
