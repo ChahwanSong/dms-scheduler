@@ -80,7 +80,7 @@ class TaskExecutor:
             result: TaskResult = await handler.execute(request)
 
             # after confirming the job completion
-            updated = await self.state_store.set_result(task_id, result, "Task finished successfully")
+            updated = await self.state_store.set_result(task_id, result, "Task result updated")
             if not updated:
                 raise TaskNotFoundError(task_id)
 
