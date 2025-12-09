@@ -76,7 +76,7 @@ class SyncTaskHandler(BaseTaskHandler):
         params = request.parameters or {}
         src: str = params.get("src")
         dst: str = params.get("dst")
-        options = params.get("options")
+        options = params.get("options") or ""
 
         pod_status: dict[str, str] = {}
         logs: dict[str, str] = {}
@@ -512,7 +512,11 @@ class SyncTaskHandler(BaseTaskHandler):
                     request.task_id, dst, f"Invalid path to service '{request.service}'"
                 )
 
-    async def _run_dsync(self, task_id: str, pod_name: str, src_path: str, dst_path: str, options: str):
+    async def _run_dsync(
+        self, task_id: str, pod_name: str, src_path: str, dst_path: str, options: Optional[str]
+    ):
+
+        options = options or ""
         
         # default options to insert
         if not "batch-files" in options:
