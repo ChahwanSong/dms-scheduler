@@ -17,6 +17,7 @@ from ..constants import (
     K8S_SYNC_D_WORKER_HOSTFILE_PATH,
     K8S_SYNC_D_DEFAULT_N_BATCH_FILES,
     K8S_SYNC_D_DEFAULT_N_SLOTS_PER_HOST,
+    K8S_SYNC_LOG_TAIL_LINES,
     K8S_SYNC_PROGRESS_UPDATE_INTERVAL,
     K8S_SYNC_VERIFIER_TEMPLATE,
     K8S_SYNC_VERIFIER_JOB_LABEL,
@@ -620,14 +621,18 @@ class SyncTaskHandler(BaseTaskHandler):
             return "warning" in lower or "error" in lower
 
         warnings_and_errors = [line for line in lines if _is_warning_or_error(line)]
-        tail_lines = lines[-500:] if len(lines) > 500 else lines
+        tail_lines = (
+            lines[-K8S_SYNC_LOG_TAIL_LINES:]
+            if len(lines) > K8S_SYNC_LOG_TAIL_LINES
+            else lines
+        )
 
         sections: list[str] = []
         if warnings_and_errors:
             sections.append("Errors/Warnings:")
             sections.extend(warnings_and_errors)
 
-        sections.append("Last 500 lines:")
+        sections.append(f"Last {K8S_SYNC_LOG_TAIL_LINES} lines:")
         sections.extend(tail_lines)
 
         return "\n".join(sections)
