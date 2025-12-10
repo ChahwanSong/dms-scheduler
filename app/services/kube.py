@@ -228,6 +228,26 @@ class VolcanoJobRunner:
         except ApiException as exc:  # pragma: no cover - network side effects
             raise TaskJobError(pod_name, f"Failed to fetch pod logs: {exc}") from exc
 
+    async def list_pod_statuses(self, label_selector: str) -> dict[str, str]:
+        try:
+            core_api, _ = self._require_clients()
+        except TaskJobError:
+            return {}
+
+        def _list_pods() -> list[V1Pod]:
+            return core_api.list_namespaced_pod(
+                namespace=self.namespace,
+                label_selector=label_selector,
+            ).items
+
+        try:
+            pods = await asyncio.to_thread(_list_pods)
+        except ApiException as exc:  # pragma: no cover - network side effects
+            logger.warning("Failed to list pods for %s: %s", label_selector, exc)
+            return {}
+
+        return {pod.metadata.name: pod.status.phase or "Unknown" for pod in pods}
+
     @staticmethod
     def _is_pod_ready(pod: V1Pod) -> bool:
         if pod.status.phase != "Running":

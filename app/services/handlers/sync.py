@@ -1,8 +1,10 @@
 """Sync task handler implementation."""
 
+import asyncio
 import logging
 import pwd
 import shlex
+from contextlib import suppress
 from typing import Any, Dict, Optional, Tuple
 
 import yaml
@@ -15,6 +17,7 @@ from ..constants import (
     K8S_SYNC_D_WORKER_HOSTFILE_PATH,
     K8S_SYNC_D_DEFAULT_N_BATCH_FILES,
     K8S_SYNC_D_DEFAULT_N_SLOTS_PER_HOST,
+    K8S_SYNC_PROGRESS_UPDATE_INTERVAL,
     K8S_SYNC_VERIFIER_TEMPLATE,
     K8S_SYNC_VERIFIER_JOB_LABEL,
     K8S_SYNC_VERIFIER_JOB_NAME_PREFIX,
@@ -221,13 +224,16 @@ class SyncTaskHandler(BaseTaskHandler):
                 await self.job_runner.create_job(task_obj)
                 
                 await self._ensure_task_running(task_id)
+                label_selector = f"{K8S_SYNC_JOB_LABEL}={task_id}"
                 sync_pods = await self.job_runner.wait_for_pods_ready(
-                    label_selector=f"{K8S_SYNC_JOB_LABEL}={task_id}",
+                    label_selector=label_selector,
                     expected=2,
                     timeout=180,
                 )
-                
-                await self._run_dsync(task_id, sync_pods[0].metadata.name, src, dst, options)
+
+                await self._run_dsync(
+                    task_id, label_selector, sync_pods[0].metadata.name, src, dst, options
+                )
                 
             finally:
                 try:
@@ -511,12 +517,20 @@ class SyncTaskHandler(BaseTaskHandler):
                     request.task_id, dst, f"Invalid path to service '{request.service}'"
                 )
 
-    async def _run_dsync(self, task_id: str, pod_name: str, src_path: str, dst_path: str, options: str):
-        
+    async def _run_dsync(
+        self,
+        task_id: str,
+        label_selector: str,
+        pod_name: str,
+        src_path: str,
+        dst_path: str,
+        options: str,
+    ):
+
         await self._ensure_task_running(task_id)
-        
+
         tokens = self._build_dsync_tokens(options)
-    
+
         dsync_cmd = DSYNC_RUN_CMD.format(
             n_slots_per_host=K8S_SYNC_D_DEFAULT_N_SLOTS_PER_HOST,
             worker_hostfile=K8S_SYNC_D_WORKER_HOSTFILE_PATH,
@@ -524,11 +538,99 @@ class SyncTaskHandler(BaseTaskHandler):
             src_path=src_path,
             dst_path=dst_path,
         )
-        
-        # run execution
-        output = (await self.job_runner.exec_in_pod(pod_name, ["/bin/bash", "-c", dsync_cmd])).strip()
-        logger.info("[Task %s] dsync output: %s", task_id, output)
-        await self.state_store.append_log(task_id, "dsync execution completed")
+
+        dsync_task = asyncio.create_task(
+            self.job_runner.exec_in_pod(pod_name, ["/bin/bash", "-c", dsync_cmd])
+        )
+
+        try:
+            while True:
+                done, _ = await asyncio.wait(
+                    {dsync_task}, timeout=K8S_SYNC_PROGRESS_UPDATE_INTERVAL
+                )
+                await self._update_sync_progress(task_id, label_selector, pod_name)
+                if dsync_task in done:
+                    break
+
+            await dsync_task
+            await self.job_runner.wait_for_completion(label_selector)
+        except asyncio.CancelledError:
+            raise
+        except TaskJobError as exc:
+            await self.state_store.append_log(task_id, f"dsync execution failed: {exc}")
+            raise
+        except Exception as exc:
+            await self.state_store.append_log(
+                task_id, f"dsync execution failed unexpectedly: {exc}"
+            )
+            raise TaskJobError(task_id, f"Unexpected dsync failure: {exc}") from exc
+        else:
+            await self.state_store.append_log(task_id, "dsync execution completed")
+        finally:
+            with suppress(asyncio.CancelledError, TaskJobError):
+                await self._update_sync_progress(task_id, label_selector, pod_name)
+
+            if not dsync_task.done():
+                dsync_task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await dsync_task
+
+    async def _update_sync_progress(self, task_id: str, label_selector: str, pod_name: str) -> None:
+        await self._ensure_task_running(task_id)
+
+        pod_statuses = await self.job_runner.list_pod_statuses(label_selector)
+        pod_status_summary = self._summarize_pod_statuses(pod_statuses)
+
+        try:
+            launcher_output = await self._build_launcher_output(pod_name, pod_statuses)
+        except TaskJobError as exc:
+            logger.warning("[Task %s] Failed to build launcher output: %s", task_id, exc)
+            return
+
+        await self.state_store.set_result(
+            task_id,
+            TaskResult(
+                pod_status=pod_status_summary,
+                launcher_output=launcher_output,
+            ),
+        )
+
+    async def _build_launcher_output(
+        self, pod_name: str, pod_statuses: dict[str, str]
+    ) -> str:
+        try:
+            raw_logs = await self.job_runner.get_pod_logs(pod_name, tail_lines=2000)
+        except TaskJobError as exc:
+            logger.warning("Failed to read logs from %s: %s", pod_name, exc)
+            raw_logs = ""
+
+        relevant_output = self._extract_relevant_output(raw_logs)
+        return self._format_output(pod_statuses, {pod_name: relevant_output})
+
+    def _summarize_pod_statuses(self, pod_statuses: dict[str, str]) -> str:
+        if not pod_statuses:
+            return "Unknown"
+        return ", ".join(f"{name}: {status}" for name, status in pod_statuses.items())
+
+    def _extract_relevant_output(self, output: str) -> str:
+        lines = output.splitlines()
+
+        def _is_warning_or_error(line: str) -> bool:
+            lower = line.lower()
+            return "warning" in lower or "error" in lower
+
+        warnings_and_errors = [line for line in lines if _is_warning_or_error(line)]
+        tail_lines = lines[-500:] if len(lines) > 500 else lines
+
+        sections: list[str] = []
+        if warnings_and_errors:
+            sections.append("Errors/Warnings:")
+            sections.extend(warnings_and_errors)
+
+        sections.append("Last 500 lines:")
+        sections.extend(tail_lines)
+
+        return "\n".join(sections)
 
     def _validate_dsync_options(self, options: str) -> list[str]:
         errors: list[str] = []
