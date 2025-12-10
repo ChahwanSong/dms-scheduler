@@ -40,6 +40,25 @@ class KubernetesClients:
         self.custom_api = client.CustomObjectsApi()
         logger.info(f"Kubernetes config loaded ({self.config_source})")
 
+    def new_core_api(self) -> client.CoreV1Api:
+        """Return a fresh CoreV1Api with an isolated ApiClient.
+
+        The Kubernetes Python client's ``stream`` helper monkey-patches the
+        ``ApiClient.request`` method on the instance it receives. Sharing the
+        same ApiClient between streaming calls and regular HTTP calls can cause
+        concurrent requests to be routed through the websocket handler, which
+        fails with ``Handshake status 200 OK``. To avoid this, use a dedicated
+        ApiClient for operations that rely on ``stream``.
+        """
+
+        self.load()
+
+        # ``get_default_copy`` provides a copy of the currently loaded
+        # configuration, ensuring the returned ApiClient does not share the
+        # instance that might be monkey-patched by ``stream``.
+        configuration = client.Configuration.get_default_copy()
+        return client.CoreV1Api(api_client=client.ApiClient(configuration=configuration))
+
 
 @dataclass
 class PodMountCheckResult:
@@ -190,7 +209,9 @@ class VolcanoJobRunner:
     async def exec_in_pod(
         self, pod_name: str, command: list[str], container: Optional[str] = None
     ) -> str:
-        core_api, _ = self._require_clients()
+        # Use a dedicated ApiClient for streaming calls to avoid monkey-patching
+        # the shared client used by other operations running concurrently.
+        core_api = self.clients.new_core_api()
 
         def _exec() -> str:
             return stream(
