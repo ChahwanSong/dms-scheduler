@@ -17,8 +17,8 @@ from ..constants import (
     K8S_SYNC_D_WORKER_HOSTFILE_PATH,
     K8S_SYNC_D_DEFAULT_N_BATCH_FILES,
     K8S_SYNC_D_DEFAULT_N_SLOTS_PER_HOST,
-    K8S_SYNC_LOG_TAIL_LINES,
     K8S_SYNC_PROGRESS_UPDATE_INTERVAL,
+    K8S_SYNC_LOG_TAIL_LINES,
     K8S_SYNC_VERIFIER_TEMPLATE,
     K8S_SYNC_VERIFIER_JOB_LABEL,
     K8S_SYNC_VERIFIER_JOB_NAME_PREFIX,
@@ -83,7 +83,7 @@ class SyncTaskHandler(BaseTaskHandler):
         options = params.get("options") or ""
 
         pod_status: dict[str, str] = {}
-        logs: dict[str, str] = {}
+        dsync_output: str | None = None
 
         src_mount_path, src_info = match_allowed_directory(src)
         if src_info is None:
@@ -232,7 +232,7 @@ class SyncTaskHandler(BaseTaskHandler):
                     timeout=180,
                 )
 
-                await self._run_dsync(
+                dsync_output, pod_status = await self._run_dsync(
                     task_id, label_selector, sync_pods[0].metadata.name, src, dst, options
                 )
                 
@@ -245,9 +245,10 @@ class SyncTaskHandler(BaseTaskHandler):
                     )
 
         await self._ensure_task_running(task_id)
+        pod_status_summary = self._summarize_pod_statuses(pod_status)
         return TaskResult(
-            pod_status="Succeeded",
-            launcher_output=self._format_output(pod_status, logs),
+            pod_status=pod_status_summary or "Succeeded",
+            launcher_output=self._format_output(pod_status, dsync_output),
         )
 
     async def cancel(self, request: CancelRequest, state: TaskRecord | None = None) -> None:
@@ -526,7 +527,7 @@ class SyncTaskHandler(BaseTaskHandler):
         src_path: str,
         dst_path: str,
         options: str,
-    ):
+    ) -> tuple[str | None, dict[str, str]]:
 
         await self._ensure_task_running(task_id)
 
@@ -543,18 +544,26 @@ class SyncTaskHandler(BaseTaskHandler):
         dsync_task = asyncio.create_task(
             self.job_runner.exec_in_pod(pod_name, ["/bin/bash", "-c", dsync_cmd])
         )
+        dsync_output: str | None = None
+        dsync_log_excerpt: str | None = None
+        final_pod_statuses: dict[str, str] = {}
 
         try:
             while True:
                 done, _ = await asyncio.wait(
                     {dsync_task}, timeout=K8S_SYNC_PROGRESS_UPDATE_INTERVAL
                 )
-                await self._update_sync_progress(task_id, label_selector, pod_name)
+                dsync_log_excerpt = await self._read_dsync_output(pod_name)
+                await self._update_sync_progress(
+                    task_id, label_selector, dsync_log_excerpt
+                )
                 if dsync_task in done:
+                    dsync_output = await dsync_task
+                    dsync_log_excerpt = self._tail_dsync_output(dsync_output)
                     break
 
-            await dsync_task
             await self.job_runner.wait_for_completion(label_selector)
+            final_pod_statuses = await self.job_runner.list_pod_statuses(label_selector)
         except asyncio.CancelledError:
             raise
         except TaskJobError as exc:
@@ -569,21 +578,32 @@ class SyncTaskHandler(BaseTaskHandler):
             await self.state_store.append_log(task_id, "dsync execution completed")
         finally:
             with suppress(asyncio.CancelledError, TaskJobError):
-                await self._update_sync_progress(task_id, label_selector, pod_name)
+                await self._update_sync_progress(
+                    task_id,
+                    label_selector,
+                    dsync_log_excerpt or self._tail_dsync_output(dsync_output),
+                )
 
             if not dsync_task.done():
                 dsync_task.cancel()
                 with suppress(asyncio.CancelledError):
                     await dsync_task
 
-    async def _update_sync_progress(self, task_id: str, label_selector: str, pod_name: str) -> None:
+        return dsync_log_excerpt or self._tail_dsync_output(dsync_output), final_pod_statuses
+
+    async def _update_sync_progress(
+        self,
+        task_id: str,
+        label_selector: str,
+        dsync_output: str | None = None,
+    ) -> None:
         await self._ensure_task_running(task_id)
 
         pod_statuses = await self.job_runner.list_pod_statuses(label_selector)
         pod_status_summary = self._summarize_pod_statuses(pod_statuses)
 
         try:
-            launcher_output = await self._build_launcher_output(pod_name, pod_statuses)
+            launcher_output = await self._build_launcher_output(pod_statuses, dsync_output)
         except TaskJobError as exc:
             logger.warning("[Task %s] Failed to build launcher output: %s", task_id, exc)
             return
@@ -597,45 +617,48 @@ class SyncTaskHandler(BaseTaskHandler):
         )
 
     async def _build_launcher_output(
-        self, pod_name: str, pod_statuses: dict[str, str]
+        self, pod_statuses: dict[str, str], dsync_output: str | None = None
     ) -> str:
-        try:
-            raw_logs = await self.job_runner.get_pod_logs(pod_name, tail_lines=2000)
-        except TaskJobError as exc:
-            logger.warning("Failed to read logs from %s: %s", pod_name, exc)
-            raw_logs = ""
+        pod_output = dsync_output.strip() if dsync_output else None
+        return self._format_output(pod_statuses, pod_output)
 
-        relevant_output = self._extract_relevant_output(raw_logs)
-        return self._format_output(pod_statuses, {pod_name: relevant_output})
+    def _tail_dsync_output(self, output: str | None) -> str | None:
+        if not output:
+            return None
+
+        lines = output.rstrip().splitlines()
+        return "\n".join(lines[-K8S_SYNC_LOG_TAIL_LINES:]) if lines else None
+
+    async def _read_dsync_output(self, pod_name: str) -> str | None:
+        try:
+            logs = await self.job_runner.get_pod_logs(
+                pod_name, tail_lines=K8S_SYNC_LOG_TAIL_LINES
+            )
+        except TaskJobError as exc:
+            logger.warning("Failed to read dsync output from %s: %s", pod_name, exc)
+            return None
+
+        return self._tail_dsync_output(logs)
 
     def _summarize_pod_statuses(self, pod_statuses: dict[str, str]) -> str:
         if not pod_statuses:
             return "Unknown"
         return ", ".join(f"{name}: {status}" for name, status in pod_statuses.items())
 
-    def _extract_relevant_output(self, output: str) -> str:
-        lines = output.splitlines()
+    def _format_output(self, pod_status: dict[str, str], dsync_output: str | None) -> str:
+        lines = ["Pod status:"]
+        if pod_status:
+            lines.extend(f"- {pod}: {status}" for pod, status in pod_status.items())
+        else:
+            lines.append("- unavailable")
 
-        def _is_warning_or_error(line: str) -> bool:
-            lower = line.lower()
-            return "warning" in lower or "error" in lower
+        lines.append("dsync output:")
+        if dsync_output:
+            lines.append(dsync_output)
+        else:
+            lines.append("(no output captured)")
 
-        warnings_and_errors = [line for line in lines if _is_warning_or_error(line)]
-        tail_lines = (
-            lines[-K8S_SYNC_LOG_TAIL_LINES:]
-            if len(lines) > K8S_SYNC_LOG_TAIL_LINES
-            else lines
-        )
-
-        sections: list[str] = []
-        if warnings_and_errors:
-            sections.append("Errors/Warnings:")
-            sections.extend(warnings_and_errors)
-
-        sections.append(f"Last {K8S_SYNC_LOG_TAIL_LINES} lines:")
-        sections.extend(tail_lines)
-
-        return "\n".join(sections)
+        return "\n".join(lines)
 
     def _validate_dsync_options(self, options: str) -> list[str]:
         errors: list[str] = []
