@@ -27,6 +27,7 @@ K8S_SYNC_D_JOB_TEMPLATE = "/dms/kube-dms-backend/template/dms-vcjob-sync-d.yaml"
 K8S_SYNC_D_WORKER_HOSTFILE_PATH = "/etc/volcano/sync_worker.host"
 K8S_SYNC_D_DEFAULT_N_BATCH_FILES = "1000000"
 K8S_SYNC_D_DEFAULT_N_SLOTS_PER_HOST = "5"
+K8S_SYNC_PROGRESS_UPDATE_INTERVAL = 10
 
 K8S_VOLCANO_HIGH_PRIO_Q = "high-q"
 K8S_VOLCANO_LOW_PRIO_Q = "low-q"
