@@ -75,9 +75,9 @@ DSYNC_RUN_CMD = (
     "--mca pml ucx "
     "--mca osc ucx "
     "-x UCX_TLS=rc_x,sm,self "
-    
+
     # 경로
     "$BINARY_PATH_DSYNC "
     "{options} "
-    "{src_path} {dst_path}"
+    "{src_path} {dst_path} 2>&1 | tee -a /proc/1/fd/1; exit ${{PIPESTATUS[0]}}"
 )
