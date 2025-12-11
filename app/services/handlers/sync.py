@@ -229,10 +229,10 @@ class SyncTaskHandler(BaseTaskHandler):
                     timeout=180,
                 )
 
-                await self._run_dsync(
+                result = await self._run_dsync(
                     task_id, label_selector, sync_pods[0].metadata.name, src, dst, options
                 )
-                
+
             finally:
                 try:
                     await self._cleanup_job(task_id, task_job_name, f"{op_type} job cleaned up")
@@ -242,10 +242,7 @@ class SyncTaskHandler(BaseTaskHandler):
                     )
 
         await self._ensure_task_running(task_id)
-        return TaskResult(
-            pod_status="Succeeded",
-            launcher_output=self._format_output(logs),
-        )
+        return result
 
     async def cancel(self, request: CancelRequest, state: TaskRecord | None = None) -> None:
         task_state = state
@@ -520,7 +517,7 @@ class SyncTaskHandler(BaseTaskHandler):
         src_path: str,
         dst_path: str,
         options: str,
-    ):
+    ) -> TaskResult:
 
         await self._ensure_task_running(task_id)
 
@@ -537,8 +534,7 @@ class SyncTaskHandler(BaseTaskHandler):
         dsync_task = asyncio.create_task(
             self.job_runner.exec_in_pod(pod_name, ["/bin/bash", "-c", dsync_cmd])
         )
-
-        final_update_performed = False
+        final_result: TaskResult | None = None
 
         try:
             while True:
@@ -550,19 +546,12 @@ class SyncTaskHandler(BaseTaskHandler):
                     break
 
             await dsync_task
-            completed_pods = await self.job_runner.wait_for_completion(
+            await self.job_runner.wait_for_completion(
                 label_selector, success_phases=("Succeeded", "Running")
             )
-            logger.info(
-                "[Task %s] wait_for_completion finished: %s",
-                task_id,
-                ", ".join(
-                    f"{pod.metadata.name}:{pod.status.phase}" for pod in completed_pods
-                ),
-            )
-            await self._update_task_progress(task_id, label_selector, pod_name)
-            final_update_performed = True
-            
+            final_result = await self._build_task_result(label_selector, pod_name)
+            logger.info("[Task %s] Task finished", task_id)
+
         except asyncio.CancelledError:
             raise
         except TaskJobError as exc:
@@ -575,11 +564,8 @@ class SyncTaskHandler(BaseTaskHandler):
             raise TaskJobError(task_id, f"Unexpected dsync failure: {exc}") from exc
         else:
             await self.state_store.append_log(task_id, "dsync execution completed")
+            return final_result
         finally:
-            with suppress(asyncio.CancelledError, TaskJobError):
-                if not final_update_performed and dsync_task.done():
-                    await self._update_task_progress(task_id, label_selector, pod_name)
-
             if not dsync_task.done():
                 dsync_task.cancel()
                 with suppress(asyncio.CancelledError):
@@ -588,22 +574,21 @@ class SyncTaskHandler(BaseTaskHandler):
     async def _update_task_progress(self, task_id: str, label_selector: str, pod_name: str) -> None:
         await self._ensure_task_running(task_id)
 
-        pod_statuses = await self.job_runner.list_pod_statuses(label_selector)
-        pod_status_summary = self._summarize_pod_statuses(pod_statuses)
-
         try:
-            launcher_output = await self._build_launcher_output(pod_name)
+            result = await self._build_task_result(label_selector, pod_name)
         except TaskJobError as exc:
             logger.warning("[Task %s] Failed to build launcher output: %s", task_id, exc)
             return
 
-        await self.state_store.set_result(
-            task_id,
-            TaskResult(
-                pod_status=pod_status_summary,
-                launcher_output=launcher_output,
-            ),
-        )
+        await self.state_store.set_result(task_id, result)
+
+    async def _build_task_result(self, label_selector: str, pod_name: str) -> TaskResult:
+        pod_statuses = await self.job_runner.list_pod_statuses(label_selector)
+        pod_status_summary = self._summarize_pod_statuses(pod_statuses)
+
+        launcher_output = await self._build_launcher_output(pod_name)
+
+        return TaskResult(pod_status=pod_status_summary, launcher_output=launcher_output)
 
     async def _build_launcher_output(self, pod_name: str) -> str:
         try:
