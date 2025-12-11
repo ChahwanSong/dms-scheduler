@@ -550,7 +550,7 @@ class SyncTaskHandler(BaseTaskHandler):
                 label_selector, success_phases=("Succeeded", "Running")
             )
             final_result = await self._build_task_result(label_selector, pod_name)
-            logger.info("[Task %s] Task finished: %s", task_id, final_result.pod_status)
+            logger.info("[Task %s] Task finished", task_id)
 
         except asyncio.CancelledError:
             raise
