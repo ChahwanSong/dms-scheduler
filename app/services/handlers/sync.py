@@ -124,7 +124,7 @@ class SyncTaskHandler(BaseTaskHandler):
         try:
             await self._ensure_task_running(task_id)
             await self.job_runner.create_job(verifier_obj)
-            
+
             await self._ensure_task_running(task_id)
             verifier_pods = await self.job_runner.wait_for_pods_ready(
                 label_selector=f"{K8S_SYNC_VERIFIER_JOB_LABEL}={task_id}",
@@ -132,15 +132,12 @@ class SyncTaskHandler(BaseTaskHandler):
                 timeout=180,
             )
 
-            # verification - (1) mount
             await self._verify_mount(task_id, verifier_pods, src_mount_path, dst_mount_path)
-            
-            # verification - (2) get path type
+
             src_path_type, dst_path_type = await self._verify_pathtype(
                 task_id, verifier_pods, src, dst
             )
-            
-            # verification - (3) ownership (SKIP FOR ROOT REQUEST)
+
             if user_id != "root":
                 await self._verify_ownership(
                     task_id,
@@ -247,7 +244,7 @@ class SyncTaskHandler(BaseTaskHandler):
         await self._ensure_task_running(task_id)
         return TaskResult(
             pod_status="Succeeded",
-            launcher_output=self._format_output(pod_status, logs),
+            launcher_output=self._format_output(logs),
         )
 
     async def cancel(self, request: CancelRequest, state: TaskRecord | None = None) -> None:
@@ -461,13 +458,10 @@ class SyncTaskHandler(BaseTaskHandler):
         except Exception as exc:  # pragma: no cover - render failure path
             raise TaskTemplateRenderError(template_path, exc) from exc
 
-    def _format_output(self, pod_status: dict[str, str], logs: dict[str, str]) -> str:
-        lines = ["Mount verification:"]
-        for pod, status in pod_status.items():
-            lines.append(f"- {pod} status: {status}")
-        lines.append("Pod logs:")
+    def _format_output(self, logs: dict[str, str]) -> str:
+        lines = []
         for pod, content in logs.items():
-            lines.append(f"- {pod} logs:\n{content}")
+            lines.append(f"- POD: {pod}, LOG:{content}")
         return "\n".join(lines)
 
     async def _check_format_sync(self, request: TaskRequest) -> None:
@@ -544,17 +538,31 @@ class SyncTaskHandler(BaseTaskHandler):
             self.job_runner.exec_in_pod(pod_name, ["/bin/bash", "-c", dsync_cmd])
         )
 
+        final_update_performed = False
+
         try:
             while True:
                 done, _ = await asyncio.wait(
                     {dsync_task}, timeout=K8S_SYNC_PROGRESS_UPDATE_INTERVAL
                 )
-                await self._update_sync_progress(task_id, label_selector, pod_name)
+                await self._update_task_progress(task_id, label_selector, pod_name)
                 if dsync_task in done:
                     break
 
             await dsync_task
-            await self.job_runner.wait_for_completion(label_selector)
+            completed_pods = await self.job_runner.wait_for_completion(
+                label_selector, success_phases=("Succeeded", "Running")
+            )
+            logger.info(
+                "[Task %s] wait_for_completion finished: %s",
+                task_id,
+                ", ".join(
+                    f"{pod.metadata.name}:{pod.status.phase}" for pod in completed_pods
+                ),
+            )
+            await self._update_task_progress(task_id, label_selector, pod_name)
+            final_update_performed = True
+            
         except asyncio.CancelledError:
             raise
         except TaskJobError as exc:
@@ -569,21 +577,22 @@ class SyncTaskHandler(BaseTaskHandler):
             await self.state_store.append_log(task_id, "dsync execution completed")
         finally:
             with suppress(asyncio.CancelledError, TaskJobError):
-                await self._update_sync_progress(task_id, label_selector, pod_name)
+                if not final_update_performed and dsync_task.done():
+                    await self._update_task_progress(task_id, label_selector, pod_name)
 
             if not dsync_task.done():
                 dsync_task.cancel()
                 with suppress(asyncio.CancelledError):
                     await dsync_task
 
-    async def _update_sync_progress(self, task_id: str, label_selector: str, pod_name: str) -> None:
+    async def _update_task_progress(self, task_id: str, label_selector: str, pod_name: str) -> None:
         await self._ensure_task_running(task_id)
 
         pod_statuses = await self.job_runner.list_pod_statuses(label_selector)
         pod_status_summary = self._summarize_pod_statuses(pod_statuses)
 
         try:
-            launcher_output = await self._build_launcher_output(pod_name, pod_statuses)
+            launcher_output = await self._build_launcher_output(pod_name)
         except TaskJobError as exc:
             logger.warning("[Task %s] Failed to build launcher output: %s", task_id, exc)
             return
@@ -596,9 +605,7 @@ class SyncTaskHandler(BaseTaskHandler):
             ),
         )
 
-    async def _build_launcher_output(
-        self, pod_name: str, pod_statuses: dict[str, str]
-    ) -> str:
+    async def _build_launcher_output(self, pod_name: str) -> str:
         try:
             raw_logs = await self.job_runner.get_pod_logs(pod_name, tail_lines=2000)
         except TaskJobError as exc:
@@ -606,12 +613,12 @@ class SyncTaskHandler(BaseTaskHandler):
             raw_logs = ""
 
         relevant_output = self._extract_relevant_output(raw_logs)
-        return self._format_output(pod_statuses, {pod_name: relevant_output})
+        return self._format_output({pod_name: relevant_output})
 
     def _summarize_pod_statuses(self, pod_statuses: dict[str, str]) -> str:
         if not pod_statuses:
             return "Unknown"
-        return ", ".join(f"{name}: {status}" for name, status in pod_statuses.items())
+        return " \n".join(f"{name}: {status}" for name, status in pod_statuses.items())
 
     def _extract_relevant_output(self, output: str) -> str:
         lines = output.splitlines()
