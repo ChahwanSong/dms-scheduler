@@ -249,6 +249,38 @@ class VolcanoJobRunner:
         except ApiException as exc:  # pragma: no cover - network side effects
             raise TaskJobError(pod_name, f"Failed to fetch pod logs: {exc}") from exc
 
+    async def get_pod_exit_code(
+        self, pod_name: str, container: Optional[str] = None
+    ) -> Optional[int]:
+        core_api, _ = self._require_clients()
+
+        def _read_exit_code() -> Optional[int]:
+            pod = core_api.read_namespaced_pod(name=pod_name, namespace=self.namespace)
+            statuses = pod.status.container_statuses or []
+
+            if container:
+                statuses = [s for s in statuses if s.name == container]
+
+            if not statuses:
+                raise TaskJobError(pod_name, "No container status available")
+
+            status = statuses[0]
+            terminated = getattr(status.state, "terminated", None)
+            if terminated and terminated.exit_code is not None:
+                return terminated.exit_code
+
+            last_state = getattr(status, "last_state", None)
+            last_terminated = getattr(last_state, "terminated", None)
+            if last_terminated and last_terminated.exit_code is not None:
+                return last_terminated.exit_code
+
+            return None
+
+        try:
+            return await asyncio.to_thread(_read_exit_code)
+        except ApiException as exc:  # pragma: no cover - network side effects
+            raise TaskJobError(pod_name, f"Failed to read pod status: {exc}") from exc
+
     async def list_pod_statuses(self, label_selector: str) -> dict[str, str]:
         try:
             core_api, _ = self._require_clients()
