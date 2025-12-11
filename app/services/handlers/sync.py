@@ -573,6 +573,10 @@ class SyncTaskHandler(BaseTaskHandler):
 
     async def _record_dsync_exit_code(self, task_id: str, result: ExecResult) -> None:
         exit_code = result.exit_code
+        await self.state_store.append_log(
+            task_id, f"dsync exit code: {exit_code if exit_code is not None else 'unknown'}"
+        )
+
         if exit_code not in (None, 0):
             stderr_output = result.stderr.strip()
             message = f"dsync failed with exit code {exit_code}"
