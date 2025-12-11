@@ -17,6 +17,10 @@ from ..constants import (
     K8S_SYNC_D_WORKER_HOSTFILE_PATH,
     K8S_SYNC_D_DEFAULT_N_BATCH_FILES,
     K8S_SYNC_D_DEFAULT_N_SLOTS_PER_HOST,
+    K8S_SYNC_D_DEFAULT_N_WORKERS,
+    K8S_SYNC_D_DEFAULT_MASTER_N_CPU,
+    K8S_SYNC_D_DEFAULT_MASTER_MEMORY,
+    K8S_SYNC_D_DEFAULT_WORKER_MEMORY,
     K8S_SYNC_LOG_TAIL_LINES,
     K8S_SYNC_PROGRESS_UPDATE_INTERVAL,
     K8S_SYNC_VERIFIER_TEMPLATE,
@@ -81,9 +85,6 @@ class SyncTaskHandler(BaseTaskHandler):
         src: str = params.get("src")
         dst: str = params.get("dst")
         options = params.get("options") or ""
-
-        pod_status: dict[str, str] = {}
-        logs: dict[str, str] = {}
 
         src_mount_path, src_info = match_allowed_directory(src)
         if src_info is None:
@@ -164,16 +165,11 @@ class SyncTaskHandler(BaseTaskHandler):
 
         # ------------------- TASK RUNNING -------------------
         # TODO: operation type 정하기 (dsync, nsync)
-        # src, dst 경로가 같은 mount_path 인지, 또는 mount_path 가 nsync 인지 dsync 로 
+        # src, dst 경로가 같은 mount_path 인지, 또는 mount_path 가 nsync 인지 dsync 로
         # 가능한지 체크 로직 추가
         op_type = "dsync"
 
         # TODO: sync 파라미터
-        n_workers = "3"
-        master_n_cpu = "2"
-        master_memory = "1Gi"
-        worker_n_cpu = K8S_SYNC_D_DEFAULT_N_SLOTS_PER_HOST
-        worker_memory = "32Gi"
         master_node_group = [
             {src_info["label"]: "true"}, # src node 중에 마스터 할당
         ]
@@ -202,15 +198,15 @@ class SyncTaskHandler(BaseTaskHandler):
                     "job_label": K8S_SYNC_JOB_LABEL,
                     "job_name_prefix": K8S_SYNC_JOB_NAME_PREFIX,
                     "service_image": K8S_SYNC_D_JOB_IMAGE,
-                    "n_workers": int(n_workers), 
-                    "queue_name": queue_name, 
+                    "n_workers": int(K8S_SYNC_D_DEFAULT_N_WORKERS), 
+                    "queue_name": queue_name,
                     "storage_volumes": storage_volumes,
                     "master_node_group": master_node_group,
-                    "master_n_cpu": int(master_n_cpu), 
-                    "master_memory": master_memory,
+                    "master_n_cpu": int(K8S_SYNC_D_DEFAULT_MASTER_N_CPU), 
+                    "master_memory": K8S_SYNC_D_DEFAULT_MASTER_MEMORY,
                     "worker_node_group": worker_node_group,
-                    "worker_n_cpu": int(worker_n_cpu), 
-                    "worker_memory": worker_memory,
+                    "worker_n_cpu": int(K8S_SYNC_D_DEFAULT_N_SLOTS_PER_HOST), 
+                    "worker_memory": K8S_SYNC_D_DEFAULT_WORKER_MEMORY,
                 },
             )
             
@@ -232,6 +228,14 @@ class SyncTaskHandler(BaseTaskHandler):
                 result = await self._run_dsync(
                     task_id, label_selector, sync_pods[0].metadata.name, src, dst, options
                 )
+
+                exit_code = await self.job_runner.get_pod_exit_code(sync_pods[0].metadata.name)
+                if exit_code is not None and exit_code != 0:
+                    message = (
+                        f"Sync launcher pod {sync_pods[0].metadata.name} exited with code {exit_code}"
+                    )
+                    await self.state_store.append_log(task_id, message)
+                    raise TaskJobError(task_id, message)
 
             finally:
                 try:

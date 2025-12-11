@@ -55,29 +55,35 @@ DSYNC_RUN_CMD = (
     # 전체 호스트 수와 총 프로세스 수 계산
     "NHOSTS=$(grep -cve '^\\s*$' {worker_hostfile})\n"
     "NP=$((NHOSTS * {n_slots_per_host}))\n"
-    
-    # dsync 실행 
-    "/usr/local/openmpi-4.1.8/bin/mpirun -np $NP "
+
+    # dsync 실행
+    "$OMPI/bin/mpirun -np $NP "
     "--host $MPI_HOST "
     "--prefix $OMPI "
     "-x LD_LIBRARY_PATH=$OMPI/lib:$LD_LIBRARY_PATH "
     "--mca orte_keep_fqdn_hostnames 1 "
     "--mca plm_rsh_agent ssh "
-    
-    # ### TCP 버전 
-    # "--mca btl tcp,self "
-    # "--mca btl_tcp_if_exclude lo "
-    # "--mca pml ob1 "
-    # "-x UCX_TLS=tcp,sm,self "
-    
-    ### RDMA 버전
-    "--mca btl ^vader,openib,tcp "
-    "--mca pml ucx "
-    "--mca osc ucx "
-    "-x UCX_TLS=rc_x,sm,self "
-    
-    # 경로
+
+    ### TCP 버전
+    "--mca btl tcp,self "
+    "--mca btl_tcp_if_exclude lo "
+    "--mca btl_tcp_nodelay 1 "
+
+    # ### RDMA 버전
+    # "--mca btl ^vader,openib,tcp "
+    # "--mca pml ucx "
+    # "--mca osc ucx "
+    # "-x UCX_TLS=rc_x,sm,self "
+
+    # 경로 및 옵션
     "$BINARY_PATH_DSYNC "
     "{options} "
-    "{src_path} {dst_path} 2>&1 | tee -a /proc/1/fd/1; exit ${{PIPESTATUS[0]}}"
+    "{src_path} {dst_path} 2>&1 | tee -a /proc/1/fd/1; "
+    "rc=${{PIPESTATUS[0]}}; "
+    "if [ \"$rc\" -eq 0 ]; then "
+    "  echo '[DSYNC_STATUS] SUCCESS' | tee -a /proc/1/fd/1; "
+    "else "
+    "  echo \"[DSYNC_STATUS] FAILED (code=$rc)\" | tee -a /proc/1/fd/1; "
+    "fi; "
+    "exit $rc"
 )
