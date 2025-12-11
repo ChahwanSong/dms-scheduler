@@ -72,6 +72,13 @@ class PodPathCheckResult:
     output: str
 
 
+@dataclass
+class ExecResult:
+    stdout: str
+    stderr: str
+    exit_code: Optional[int]
+
+
 class VolcanoJobRunner:
     """Utility wrapper for creating, monitoring, and cleaning Volcano jobs."""
 
@@ -231,6 +238,53 @@ class VolcanoJobRunner:
         except ApiException as exc:  # pragma: no cover - network side effects
             raise TaskJobError(pod_name, f"Failed to exec in pod: {exc}") from exc
 
+    async def exec_in_pod_with_exit_code(
+        self, pod_name: str, command: list[str], container: Optional[str] = None
+    ) -> ExecResult:
+        core_api = self.clients.new_core_api()
+
+        def _exec() -> ExecResult:
+            resp = stream(
+                core_api.connect_get_namespaced_pod_exec,
+                pod_name,
+                self.namespace,
+                command=command,
+                container=container,
+                stderr=True,
+                stdin=False,
+                stdout=True,
+                tty=False,
+                _preload_content=False,
+            )
+
+            stdout_parts: list[str] = []
+            stderr_parts: list[str] = []
+
+            while resp.is_open():
+                resp.update(timeout=1)
+
+                if resp.peek_stdout():
+                    stdout_parts.append(resp.read_stdout())
+
+                if resp.peek_stderr():
+                    stderr_parts.append(resp.read_stderr())
+
+                if resp.returncode is not None:
+                    break
+
+            resp.close()
+
+            return ExecResult(
+                stdout="".join(stdout_parts),
+                stderr="".join(stderr_parts),
+                exit_code=resp.returncode,
+            )
+
+        try:
+            return await asyncio.to_thread(_exec)
+        except ApiException as exc:  # pragma: no cover - network side effects
+            raise TaskJobError(pod_name, f"Failed to exec in pod: {exc}") from exc
+
     async def get_pod_logs(
         self, pod_name: str, container: Optional[str] = None, tail_lines: int = 500
     ) -> str:
@@ -248,38 +302,6 @@ class VolcanoJobRunner:
             return await asyncio.to_thread(_logs)
         except ApiException as exc:  # pragma: no cover - network side effects
             raise TaskJobError(pod_name, f"Failed to fetch pod logs: {exc}") from exc
-
-    async def get_pod_exit_code(
-        self, pod_name: str, container: Optional[str] = None
-    ) -> Optional[int]:
-        core_api, _ = self._require_clients()
-
-        def _read_exit_code() -> Optional[int]:
-            pod = core_api.read_namespaced_pod(name=pod_name, namespace=self.namespace)
-            statuses = pod.status.container_statuses or []
-
-            if container:
-                statuses = [s for s in statuses if s.name == container]
-
-            if not statuses:
-                raise TaskJobError(pod_name, "No container status available")
-
-            status = statuses[0]
-            terminated = getattr(status.state, "terminated", None)
-            if terminated and terminated.exit_code is not None:
-                return terminated.exit_code
-
-            last_state = getattr(status, "last_state", None)
-            last_terminated = getattr(last_state, "terminated", None)
-            if last_terminated and last_terminated.exit_code is not None:
-                return last_terminated.exit_code
-
-            return None
-
-        try:
-            return await asyncio.to_thread(_read_exit_code)
-        except ApiException as exc:  # pragma: no cover - network side effects
-            raise TaskJobError(pod_name, f"Failed to read pod status: {exc}") from exc
 
     async def list_pod_statuses(self, label_selector: str) -> dict[str, str]:
         try:
@@ -310,4 +332,10 @@ class VolcanoJobRunner:
         return all(cs.ready for cs in pod.status.container_statuses)
 
 
-__all__ = ["KubernetesClients", "PodMountCheckResult", "PodPathCheckResult", "VolcanoJobRunner"]
+__all__ = [
+    "KubernetesClients",
+    "PodMountCheckResult",
+    "PodPathCheckResult",
+    "ExecResult",
+    "VolcanoJobRunner",
+]

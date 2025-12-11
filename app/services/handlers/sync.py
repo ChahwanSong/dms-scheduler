@@ -48,7 +48,7 @@ from ..errors import (
     TaskNotFoundError,
     TaskTemplateRenderError,
 )
-from ..kube import PodMountCheckResult, PodPathCheckResult, VolcanoJobRunner
+from ..kube import ExecResult, PodMountCheckResult, PodPathCheckResult, VolcanoJobRunner
 from ..state_store import StateStore
 from ...models.schemas import (
     CancelRequest,
@@ -228,14 +228,6 @@ class SyncTaskHandler(BaseTaskHandler):
                 result = await self._run_dsync(
                     task_id, label_selector, sync_pods[0].metadata.name, src, dst, options
                 )
-
-                exit_code = await self.job_runner.get_pod_exit_code(sync_pods[0].metadata.name)
-                if exit_code is not None and exit_code != 0:
-                    message = (
-                        f"Sync launcher pod {sync_pods[0].metadata.name} exited with code {exit_code}"
-                    )
-                    await self.state_store.append_log(task_id, message)
-                    raise TaskJobError(task_id, message)
 
             finally:
                 try:
@@ -536,9 +528,12 @@ class SyncTaskHandler(BaseTaskHandler):
         )
 
         dsync_task = asyncio.create_task(
-            self.job_runner.exec_in_pod(pod_name, ["/bin/bash", "-c", dsync_cmd])
+            self.job_runner.exec_in_pod_with_exit_code(
+                pod_name, ["/bin/bash", "-c", dsync_cmd]
+            )
         )
         final_result: TaskResult | None = None
+        dsync_result: ExecResult | None = None
 
         try:
             while True:
@@ -549,7 +544,8 @@ class SyncTaskHandler(BaseTaskHandler):
                 if dsync_task in done:
                     break
 
-            await dsync_task
+            dsync_result = await dsync_task
+            await self._record_dsync_exit_code(task_id, dsync_result)
             await self.job_runner.wait_for_completion(
                 label_selector, success_phases=("Succeeded", "Running")
             )
@@ -574,6 +570,15 @@ class SyncTaskHandler(BaseTaskHandler):
                 dsync_task.cancel()
                 with suppress(asyncio.CancelledError):
                     await dsync_task
+
+    async def _record_dsync_exit_code(self, task_id: str, result: ExecResult) -> None:
+        exit_code = result.exit_code
+        if exit_code not in (None, 0):
+            stderr_output = result.stderr.strip()
+            message = f"dsync failed with exit code {exit_code}"
+            if stderr_output:
+                message = f"{message} - {stderr_output}"
+            raise TaskJobError(task_id, message)
 
     async def _update_task_progress(self, task_id: str, label_selector: str, pod_name: str) -> None:
         await self._ensure_task_running(task_id)
