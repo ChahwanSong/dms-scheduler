@@ -1,5 +1,6 @@
 """Sync task handler implementation."""
 
+import os
 import asyncio
 import logging
 import pwd
@@ -12,11 +13,12 @@ from jinja2 import Template
 from kubernetes.client import V1Pod
 
 from ..constants import (
+    K8S_DMS_LOG_DIRECTORY,
     K8S_SYNC_D_JOB_TEMPLATE,
     K8S_SYNC_D_JOB_IMAGE,
     K8S_SYNC_D_WORKER_HOSTFILE_PATH,
     K8S_SYNC_D_DEFAULT_N_BATCH_FILES,
-    K8S_SYNC_D_DEFAULT_N_SLOTS_PER_HOST,
+    K8S_SYNC_D_DEFAULT_N_CPU_PER_WORKER,
     K8S_SYNC_D_DEFAULT_N_WORKERS,
     K8S_SYNC_D_DEFAULT_MASTER_N_CPU,
     K8S_SYNC_D_DEFAULT_MASTER_MEMORY,
@@ -205,7 +207,7 @@ class SyncTaskHandler(BaseTaskHandler):
                     "master_n_cpu": int(K8S_SYNC_D_DEFAULT_MASTER_N_CPU), 
                     "master_memory": K8S_SYNC_D_DEFAULT_MASTER_MEMORY,
                     "worker_node_group": worker_node_group,
-                    "worker_n_cpu": int(K8S_SYNC_D_DEFAULT_N_SLOTS_PER_HOST), 
+                    "worker_n_cpu": int(K8S_SYNC_D_DEFAULT_N_CPU_PER_WORKER), 
                     "worker_memory": K8S_SYNC_D_DEFAULT_WORKER_MEMORY,
                 },
             )
@@ -225,9 +227,16 @@ class SyncTaskHandler(BaseTaskHandler):
                     timeout=180,
                 )
 
+                _temp = """TEST_CMD = "while true; do date '+%Y-%m-%d %H:%M:%S'; sleep 1; done"
+                await self._ensure_task_running(task_id)
+                logger.info(f"Run infinite loop on {sync_pods[0].metadata.name}")
+                await self.job_runner.exec_in_pod(sync_pods[0].metadata.name,
+                        ["/bin/bash", "-c", TEST_CMD])"""
+
                 result = await self._run_dsync(
                     task_id, label_selector, sync_pods[0].metadata.name, src, dst, options
                 )
+
 
             finally:
                 try:
@@ -403,17 +412,6 @@ class SyncTaskHandler(BaseTaskHandler):
 
         return src_ownership, dst_ownership
 
-    async def _collect_logs(self, task_id: str, pods: list[V1Pod]) -> dict[str, str]:
-        logs: dict[str, str] = {}
-        for pod in pods:
-            await self._ensure_task_running(task_id)
-            pod_name = pod.metadata.name
-            try:
-                logs[pod_name] = await self.job_runner.get_pod_logs(pod_name)
-            except TaskJobError as exc:
-                logger.warning(f"Failed to read logs from {pod_name}: {exc}")
-        return logs
-
     async def _ensure_task_running(self, task_id: str) -> None:
         state = await self.state_store.get_task(task_id)
         if state and state.status == TaskStatus.running:
@@ -450,12 +448,6 @@ class SyncTaskHandler(BaseTaskHandler):
             return yaml.safe_load(rendered)
         except Exception as exc:  # pragma: no cover - render failure path
             raise TaskTemplateRenderError(template_path, exc) from exc
-
-    def _format_output(self, logs: dict[str, str]) -> str:
-        lines = []
-        for pod, content in logs.items():
-            lines.append(f"- POD: {pod}, LOG:{content}")
-        return "\n".join(lines)
 
     async def _check_format_sync(self, request: TaskRequest) -> None:
         params: Dict[str, Any] = request.parameters or {}
@@ -520,7 +512,7 @@ class SyncTaskHandler(BaseTaskHandler):
         tokens = self._build_dsync_tokens(options)
 
         dsync_cmd = DSYNC_RUN_CMD.format(
-            n_slots_per_host=K8S_SYNC_D_DEFAULT_N_SLOTS_PER_HOST,
+            n_slots_per_host=int(K8S_SYNC_D_DEFAULT_N_CPU_PER_WORKER),
             worker_hostfile=K8S_SYNC_D_WORKER_HOSTFILE_PATH,
             options=" ".join(shlex.quote(token) for token in tokens),
             src_path=src_path,
@@ -532,25 +524,26 @@ class SyncTaskHandler(BaseTaskHandler):
                 pod_name, ["/bin/bash", "-c", dsync_cmd]
             )
         )
-        final_result: TaskResult | None = None
+        task_result: TaskResult | None = None
         dsync_result: ExecResult | None = None
 
         try:
             while True:
                 done, _ = await asyncio.wait(
-                    {dsync_task}, timeout=K8S_SYNC_PROGRESS_UPDATE_INTERVAL
+                    {dsync_task}, timeout=int(K8S_SYNC_PROGRESS_UPDATE_INTERVAL)
                 )
-                await self._update_task_progress(task_id, label_selector, pod_name)
+                task_result = await self._update_task_progress(task_id, label_selector, pod_name)
                 if dsync_task in done:
                     break
 
             dsync_result = await dsync_task
+            
             await self._record_dsync_exit_code(task_id, dsync_result)
             await self.job_runner.wait_for_completion(
                 label_selector, success_phases=("Succeeded", "Running")
             )
-            final_result = await self._build_task_result(label_selector, pod_name)
-            logger.info("[Task %s] Task finished", task_id)
+            task_result = await self._build_task_result(label_selector, pod_name, tail_lines=10000)
+            logger.info(f"[Task {task_id}] Task finished")
 
         except asyncio.CancelledError:
             raise
@@ -564,17 +557,36 @@ class SyncTaskHandler(BaseTaskHandler):
             raise TaskJobError(task_id, f"Unexpected dsync failure: {exc}") from exc
         else:
             await self.state_store.append_log(task_id, "dsync execution completed")
-            return final_result
         finally:
+            ### always run the below code 
+            
+            # enforce to finish
             if not dsync_task.done():
                 dsync_task.cancel()
                 with suppress(asyncio.CancelledError):
                     await dsync_task
-
+            
+            # enforce to save a log file
+            dir_path = K8S_DMS_LOG_DIRECTORY
+            logname = f"{task_id}.log"
+            if os.path.exists(dir_path):
+                with open(os.path.join(dir_path, logname), "w", encoding="utf-8") as f:
+                    f.write(task_result.launcher_output)
+                logger.info(f"Saved a log: {dir_path}/{logname}")
+            else:
+                logger.error(f"Failed to save a log: {dir_path}/{logname}")
+                
+            # return a log to memorize
+            output = task_result.launcher_output
+            lines = output.splitlines()
+            task_result.launcher_output = "\n".join(lines[-int(K8S_SYNC_LOG_TAIL_LINES):])
+            return task_result
+            
+            
     async def _record_dsync_exit_code(self, task_id: str, result: ExecResult) -> None:
         exit_code = result.exit_code
         await self.state_store.append_log(
-            task_id, f"dsync exit code: {exit_code if exit_code is not None else 'unknown'}"
+            task_id, f"dsync exit code: {exit_code if exit_code is not None else 'unknown'} (0 is success)"
         )
 
         if exit_code not in (None, 0):
@@ -584,61 +596,65 @@ class SyncTaskHandler(BaseTaskHandler):
                 message = f"{message} - {stderr_output}"
             raise TaskJobError(task_id, message)
 
-    async def _update_task_progress(self, task_id: str, label_selector: str, pod_name: str) -> None:
+    async def _update_task_progress(self, task_id: str, label_selector: str, pod_name: str, tail_lines: Optional[int] = None) -> TaskResult | None:
         await self._ensure_task_running(task_id)
 
         try:
-            result = await self._build_task_result(label_selector, pod_name)
+            task_result = await self._build_task_result(label_selector, pod_name, tail_lines)
         except TaskJobError as exc:
-            logger.warning("[Task %s] Failed to build launcher output: %s", task_id, exc)
+            logger.warning(f"[Task {task_id}] Failed to build launcher output: {exc}")
             return
 
-        await self.state_store.set_result(task_id, result)
+        await self.state_store.set_result(task_id, task_result)
+        return task_result
 
-    async def _build_task_result(self, label_selector: str, pod_name: str) -> TaskResult:
+    async def _build_task_result(self, label_selector: str, pod_name: str, tail_lines: Optional[int]) -> TaskResult:
         pod_statuses = await self.job_runner.list_pod_statuses(label_selector)
         pod_status_summary = self._summarize_pod_statuses(pod_statuses)
 
-        launcher_output = await self._build_launcher_output(pod_name)
+        launcher_output = await self._build_launcher_output(pod_name, tail_lines)
 
         return TaskResult(pod_status=pod_status_summary, launcher_output=launcher_output)
 
-    async def _build_launcher_output(self, pod_name: str) -> str:
+    async def _build_launcher_output(self, pod_name: str, tail_lines: Optional[int]) -> str:
         try:
-            raw_logs = await self.job_runner.get_pod_logs(pod_name, tail_lines=2000)
+            raw_logs = await self.job_runner.get_pod_logs(pod_name=pod_name, tail_lines=tail_lines)
         except TaskJobError as exc:
-            logger.warning("Failed to read logs from %s: %s", pod_name, exc)
+            logger.warning(f"Failed to read logs from {pod_name}: {exc}")
             raw_logs = ""
 
-        relevant_output = self._extract_relevant_output(raw_logs)
-        return self._format_output({pod_name: relevant_output})
+        relevant_output = self._extract_relevant_output(raw_logs, tail_lines=tail_lines)
+        return relevant_output
 
     def _summarize_pod_statuses(self, pod_statuses: dict[str, str]) -> str:
         if not pod_statuses:
             return "Unknown"
         return " \n".join(f"{name}: {status}" for name, status in pod_statuses.items())
 
-    def _extract_relevant_output(self, output: str) -> str:
+    def _extract_relevant_output(self, output: str, tail_lines: Optional[int]) -> str:
         lines = output.splitlines()
 
         def _is_warning_or_error(line: str) -> bool:
             lower = line.lower()
-            return "warning" in lower or "error" in lower
+            return "warn" in lower or "error" in lower or "fail" in lower
 
         warnings_and_errors = [line for line in lines if _is_warning_or_error(line)]
-        tail_lines = (
-            lines[-K8S_SYNC_LOG_TAIL_LINES:]
-            if len(lines) > K8S_SYNC_LOG_TAIL_LINES
-            else lines
-        )
+        if tail_lines is None:
+            truncated = lines
+        else:
+            truncated = (
+                lines[-tail_lines:]
+                if len(lines) > tail_lines
+                else lines
+            )
 
         sections: list[str] = []
         if warnings_and_errors:
-            sections.append("Errors/Warnings:")
+            sections.append("[Errors / Warnings]")
             sections.extend(warnings_and_errors)
 
-        sections.append(f"Last {K8S_SYNC_LOG_TAIL_LINES} lines:")
-        sections.extend(tail_lines)
+        sections.append(f"\n\n[Last lines]")
+        sections.extend(truncated)
 
         return "\n".join(sections)
 
