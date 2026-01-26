@@ -286,16 +286,21 @@ class VolcanoJobRunner:
             raise TaskJobError(pod_name, f"Failed to exec in pod: {exc}") from exc
 
     async def get_pod_logs(
-        self, pod_name: str, container: Optional[str] = None, tail_lines: int = 500
+        self, pod_name: str, container: Optional[str] = None, tail_lines: Optional[int] = None, request_timeout: int = 10,
     ) -> str:
         core_api, _ = self._require_clients()
-
+        
+        # by default, get lines at tail
+        if tail_lines is None:
+            tail_lines = 100
+            
         def _logs() -> str:
             return core_api.read_namespaced_pod_log(
                 name=pod_name,
                 namespace=self.namespace,
                 container=container,
                 tail_lines=tail_lines,
+                _request_timeout=request_timeout,
             )
 
         try:
