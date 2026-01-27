@@ -68,6 +68,7 @@ DSYNC_RUN_CMD = (
     "--mca btl tcp,self "
     "--mca btl_tcp_if_exclude lo "
     "--mca btl_tcp_nodelay 1 "
+    "--mca pml ob1 "  # 안정적인 MPI PML 환경 (UCX 는 가끔 PML component 못찾아서 오류남)
 
     # ### RDMA 버전
     # "--mca btl ^vader,openib,tcp "
