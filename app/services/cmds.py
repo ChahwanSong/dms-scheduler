@@ -48,6 +48,17 @@ OWNERSHIP_VERIFY_DST_CMD = (
     "fi' bash {target_path} 2>/dev/null"
 )
 
+RM_OWNERSHIP_VERIFY_CMD = (
+    "sudo -u {user_id} bash -c '"
+    "target=\"$1\"; "
+    "parent=$(dirname \"$target\"); "
+    "if [ -w \"$parent\" ] && [ -x \"$parent\" ]; then "
+    "  echo \"__TRUE__\"; "
+    "else "
+    "  echo \"__FALSE__\"; "
+    "fi' bash {target_path} 2>/dev/null"
+)
+
 # dsync 템플릿
 DSYNC_RUN_CMD = (
     # host:slots,host:slots,... 포맷으로 MPI_HOST 생성
