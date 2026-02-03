@@ -16,6 +16,7 @@ from .errors import (
     TaskUnsupportedServiceError,
 )
 from .handlers.base import BaseTaskHandler
+from .handlers.rm import RmTaskHandler
 from .handlers.sync import SyncTaskHandler
 from .kube import VolcanoJobRunner
 from ..models.schemas import CancelRequest, TaskRequest, TaskResult, TaskStatus
@@ -30,6 +31,7 @@ class TaskExecutor:
         job_runner = VolcanoJobRunner(K8S_DMS_NAMESPACE)
         self._handlers: Dict[str, BaseTaskHandler] = {
             "sync": SyncTaskHandler(job_runner, state_store),
+            "rm": RmTaskHandler(job_runner, state_store),
         }
 
     async def handle_task(self, request: TaskRequest):
