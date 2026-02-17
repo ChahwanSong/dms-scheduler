@@ -37,9 +37,9 @@ from ..constants import (
 from ..cmds import (
     MOUNT_VERIFY_CMD,
     PATHTYPE_VERIFY_CMD,
-    OWNERSHIP_VERIFY_SRC_FILE_CMD,
-    OWNERSHIP_VERIFY_SRC_DIR_CMD,
-    OWNERSHIP_VERIFY_DST_CMD,
+    SYNC_OWNERSHIP_VERIFY_SRC_FILE_CMD,
+    SYNC_OWNERSHIP_VERIFY_SRC_DIR_CMD,
+    SYNC_OWNERSHIP_VERIFY_DST_CMD,
     DSYNC_RUN_CMD,
 )
 from ..directory import make_volume_name_from_path, match_allowed_directory
@@ -122,7 +122,9 @@ class SyncTaskHandler(BaseTaskHandler):
         )
 
         verifier_job_name = f"{K8S_SYNC_VERIFIER_JOB_NAME_PREFIX}-{task_id}"
-        await self._add_active_job(task_id, verifier_job_name, "Registered verifier job")
+        await self._add_active_job(
+            task_id, verifier_job_name, "Registered verifier job"
+        )
 
         try:
             await self._ensure_task_running(task_id)
@@ -135,8 +137,9 @@ class SyncTaskHandler(BaseTaskHandler):
                 timeout=180,
             )
 
-            await self._verify_mount(task_id, verifier_pods, src_mount_path, dst_mount_path)
-
+            await self._verify_mount(
+                task_id, verifier_pods, src_mount_path, dst_mount_path
+            )
             src_path_type, dst_path_type = await self._verify_pathtype(
                 task_id, verifier_pods, src, dst
             )
@@ -159,7 +162,9 @@ class SyncTaskHandler(BaseTaskHandler):
                     ["/bin/bash", "-c", TEST_CMD]) """
         finally:
             try:
-                await self._cleanup_job(task_id, verifier_job_name, "Verifier job cleaned up")
+                await self._cleanup_job(
+                    task_id, verifier_job_name, "Verifier job cleaned up"
+                )
             except TaskJobError:
                 logger.warning(
                     f"[Task {task_id}] Failed to clean up verifier job {verifier_job_name}"
@@ -173,7 +178,7 @@ class SyncTaskHandler(BaseTaskHandler):
 
         # TODO: sync 파라미터
         master_node_group = [
-            {src_info["label"]: "true"}, # src node 중에 마스터 할당
+            {src_info["label"]: "true"},  # src node 중에 마스터 할당
         ]
         worker_node_group = [
             {src_info["label"]: "true"},
@@ -200,25 +205,27 @@ class SyncTaskHandler(BaseTaskHandler):
                     "job_label": K8S_SYNC_JOB_LABEL,
                     "job_name_prefix": K8S_SYNC_JOB_NAME_PREFIX,
                     "service_image": K8S_SYNC_D_JOB_IMAGE,
-                    "n_workers": int(K8S_SYNC_D_DEFAULT_N_WORKERS), 
+                    "n_workers": int(K8S_SYNC_D_DEFAULT_N_WORKERS),
                     "queue_name": queue_name,
                     "storage_volumes": storage_volumes,
                     "master_node_group": master_node_group,
-                    "master_n_cpu": int(K8S_SYNC_D_DEFAULT_MASTER_N_CPU), 
+                    "master_n_cpu": int(K8S_SYNC_D_DEFAULT_MASTER_N_CPU),
                     "master_memory": K8S_SYNC_D_DEFAULT_MASTER_MEMORY,
                     "worker_node_group": worker_node_group,
-                    "worker_n_cpu": int(K8S_SYNC_D_DEFAULT_N_CPU_PER_WORKER), 
+                    "worker_n_cpu": int(K8S_SYNC_D_DEFAULT_N_CPU_PER_WORKER),
                     "worker_memory": K8S_SYNC_D_DEFAULT_WORKER_MEMORY,
                 },
             )
-            
+
             task_job_name = f"{K8S_SYNC_JOB_NAME_PREFIX}-{task_id}"
-            await self._add_active_job(task_id, task_job_name, f"Registered sync job - {op_type}")
-            
+            await self._add_active_job(
+                task_id, task_job_name, f"Registered sync job - {op_type}"
+            )
+
             try:
                 await self._ensure_task_running(task_id)
                 await self.job_runner.create_job(task_obj)
-                
+
                 await self._ensure_task_running(task_id)
                 label_selector = f"{K8S_SYNC_JOB_LABEL}={task_id}"
                 sync_pods = await self.job_runner.wait_for_pods_ready(
@@ -226,6 +233,7 @@ class SyncTaskHandler(BaseTaskHandler):
                     expected=2,
                     timeout=180,
                 )
+                pod_name = sync_pods[0].metadata.name
 
                 _temp = """TEST_CMD = "while true; do date '+%Y-%m-%d %H:%M:%S'; sleep 1; done"
                 await self._ensure_task_running(task_id)
@@ -234,13 +242,19 @@ class SyncTaskHandler(BaseTaskHandler):
                         ["/bin/bash", "-c", TEST_CMD])"""
 
                 result = await self._run_dsync(
-                    task_id, label_selector, sync_pods[0].metadata.name, src, dst, options
+                    task_id=task_id,
+                    label_selector=label_selector,
+                    pod_name=pod_name,
+                    src_path=src,
+                    dst_path=dst,
+                    options=options,
                 )
-
 
             finally:
                 try:
-                    await self._cleanup_job(task_id, task_job_name, f"{op_type} job cleaned up")
+                    await self._cleanup_job(
+                        task_id, task_job_name, f"{op_type} job cleaned up"
+                    )
                 except TaskJobError:
                     logger.warning(
                         f"[Task {task_id}] Failed to clean up verifier job {task_job_name}"
@@ -249,7 +263,9 @@ class SyncTaskHandler(BaseTaskHandler):
         await self._ensure_task_running(task_id)
         return result
 
-    async def cancel(self, request: CancelRequest, state: TaskRecord | None = None) -> None:
+    async def cancel(
+        self, request: CancelRequest, state: TaskRecord | None = None
+    ) -> None:
         task_state = state
         if task_state is None:
             task_state = await self.state_store.get_task(request.task_id)
@@ -259,7 +275,9 @@ class SyncTaskHandler(BaseTaskHandler):
 
         jobs = list(task_state.active_jobs)
         if not jobs:
-            await self.state_store.append_log(request.task_id, "No active jobs to cancel")
+            await self.state_store.append_log(
+                request.task_id, "No active jobs to cancel"
+            )
             return
 
         for job_name in jobs:
@@ -267,7 +285,9 @@ class SyncTaskHandler(BaseTaskHandler):
                 await self._cleanup_job(
                     request.task_id, job_name, f"Cancellation sent to job {job_name}"
                 )
-                state = await self.state_store.set_status(request.task_id, TaskStatus.cancelled, f"Task cancelled")
+                state = await self.state_store.set_status(
+                    request.task_id, TaskStatus.cancelled, f"Task cancelled"
+                )
                 if not state:
                     raise TaskNotFoundError(request.task_id)
             except TaskJobError as exc:
@@ -281,7 +301,7 @@ class SyncTaskHandler(BaseTaskHandler):
         checks: list[PodMountCheckResult] = []
 
         await self._ensure_task_running(task_id)
-            
+
         for pod in pods:
             pod_name = pod.metadata.name
             if "src-checker" in pod_name:
@@ -294,12 +314,14 @@ class SyncTaskHandler(BaseTaskHandler):
             output = (
                 await self.job_runner.exec_in_pod(
                     pod_name,
-                    ["/bin/bash", "-c", MOUNT_VERIFY_CMD.format(mount_point=mount_point)],
+                    [
+                        "/bin/bash",
+                        "-c",
+                        MOUNT_VERIFY_CMD.format(mount_point=mount_point),
+                    ],
                 )
             ).strip() or "__NULL__"
-            logger.info(
-                f"[Task {task_id}] 'mount' check of {mount_point} => {output}"
-            )
+            logger.info(f"[Task {task_id}] 'mount' check of {mount_point} => {output}")
             checks.append(PodMountCheckResult(name=pod_name, output=output))
 
         is_mount_verified = all(item.output == "__TRUE__" for item in checks)
@@ -315,7 +337,7 @@ class SyncTaskHandler(BaseTaskHandler):
         checks: list[PodPathCheckResult] = []
 
         await self._ensure_task_running(task_id)
-            
+
         for pod in pods:
             pod_name = pod.metadata.name
             if "src-checker" in pod_name:
@@ -330,7 +352,11 @@ class SyncTaskHandler(BaseTaskHandler):
             output = (
                 await self.job_runner.exec_in_pod(
                     pod_name,
-                    ["/bin/bash", "-c", PATHTYPE_VERIFY_CMD.format(target_path=target_path)],
+                    [
+                        "/bin/bash",
+                        "-c",
+                        PATHTYPE_VERIFY_CMD.format(target_path=target_path),
+                    ],
                 )
             ).strip() or "__NULL__"
             if type_path == "src":
@@ -340,16 +366,26 @@ class SyncTaskHandler(BaseTaskHandler):
                 logger.info(f"[Task {task_id}] dst type => {output}")
             checks.append(PodPathCheckResult(name=pod_name, output=output))
 
-        src_path_type = next((r.output for r in checks if "src-checker" in r.name), None)
-        dst_path_type = next((r.output for r in checks if "dst-checker" in r.name), None)
-        
+        src_path_type = next(
+            (r.output for r in checks if "src-checker" in r.name), None
+        )
+        dst_path_type = next(
+            (r.output for r in checks if "dst-checker" in r.name), None
+        )
+
         if src_path_type == "__NOT_FOUND__":
-            raise TaskInvalidDirectoryError(task_id, src_path, "Cannot find the src path")
+            raise TaskInvalidDirectoryError(
+                task_id, src_path, "Cannot find the src path"
+            )
         elif src_path_type != "__FILE__" and src_path_type != "__DIR__":
-            raise TaskInvalidDirectoryError(task_id, src_path, f"Unknown src path type: {src_path_type}")
+            raise TaskInvalidDirectoryError(
+                task_id, src_path, f"Unknown src path type: {src_path_type}"
+            )
 
         if dst_path_type != "__DIR__":
-            raise TaskInvalidDirectoryError(task_id, dst_path, f"Dst path is not a directory - {dst_path_type}")
+            raise TaskInvalidDirectoryError(
+                task_id, dst_path, f"Dst path is not a directory - {dst_path_type}"
+            )
 
         # write a log
         await self.state_store.append_log(task_id, "Pathtype verification is done")
@@ -369,19 +405,19 @@ class SyncTaskHandler(BaseTaskHandler):
         checks: list[PodPathCheckResult] = []
 
         await self._ensure_task_running(task_id)
-            
+
         for pod in pods:
             pod_name = pod.metadata.name
             if "src-checker" in pod_name:
                 target_path = src_path
                 if src_path_type == "__FILE__":
-                    target_cmd = OWNERSHIP_VERIFY_SRC_FILE_CMD
+                    target_cmd = SYNC_OWNERSHIP_VERIFY_SRC_FILE_CMD
                 else:
-                    target_cmd = OWNERSHIP_VERIFY_SRC_DIR_CMD
+                    target_cmd = SYNC_OWNERSHIP_VERIFY_SRC_DIR_CMD
                 type_path = "src"
             elif "dst-checker" in pod_name:
                 target_path = dst_path
-                target_cmd = OWNERSHIP_VERIFY_DST_CMD
+                target_cmd = SYNC_OWNERSHIP_VERIFY_DST_CMD
                 type_path = "dst"
             else:
                 raise TaskJobError(pod_name, "Verifier pod naming is invalid")
@@ -389,19 +425,27 @@ class SyncTaskHandler(BaseTaskHandler):
             output = (
                 await self.job_runner.exec_in_pod(
                     pod_name,
-                    ["/bin/bash", "-c", target_cmd.format(user_id=user_id, target_path=target_path)],
+                    [
+                        "/bin/bash",
+                        "-c",
+                        target_cmd.format(user_id=user_id, target_path=target_path),
+                    ],
                 )
             ).strip() or "__NULL__"
             logger.info(f"[Task {task_id}] {type_path} ownership => {output}")
             checks.append(PodPathCheckResult(name=pod_name, output=output))
 
-        src_ownership = next((r.output for r in checks if "src-checker" in r.name), None)
+        src_ownership = next(
+            (r.output for r in checks if "src-checker" in r.name), None
+        )
         if src_ownership != "__TRUE__":
             raise TaskInvalidDirectoryError(
                 task_id, src_path, f"Permission failed to src path"
             )
 
-        dst_ownership = next((r.output for r in checks if "dst-checker" in r.name), None)
+        dst_ownership = next(
+            (r.output for r in checks if "dst-checker" in r.name), None
+        )
         if dst_ownership != "__TRUE__":
             raise TaskInvalidDirectoryError(
                 task_id, dst_path, f"Permission failed to dst path"
@@ -438,7 +482,6 @@ class SyncTaskHandler(BaseTaskHandler):
 
         # default, return a low priority
         return K8S_VOLCANO_LOW_PRIO_Q
-        
 
     def _render_template(self, template_path: str, context: Dict[str, Any]) -> dict:
         try:
@@ -463,9 +506,13 @@ class SyncTaskHandler(BaseTaskHandler):
             errors.append(f"'dst' must be a non-empty string, got {repr(dst)}")
 
         if isinstance(src, str) and not src.startswith("/"):
-            errors.append(f"'src' must be an absolute path starting with '/', got {src!r}")
+            errors.append(
+                f"'src' must be an absolute path starting with '/', got {src!r}"
+            )
         if isinstance(dst, str) and not dst.startswith("/"):
-            errors.append(f"'dst' must be an absolute path starting with '/', got {dst!r}")
+            errors.append(
+                f"'dst' must be an absolute path starting with '/', got {dst!r}"
+            )
 
         for key, path in (("src", src), ("dst", dst)):
             if isinstance(path, str) and ".." in path.split("/"):
@@ -525,24 +572,29 @@ class SyncTaskHandler(BaseTaskHandler):
             )
         )
         task_result: TaskResult | None = None
-        dsync_result: ExecResult | None = None
 
         try:
             while True:
                 done, _ = await asyncio.wait(
                     {dsync_task}, timeout=int(K8S_SYNC_PROGRESS_UPDATE_INTERVAL)
                 )
-                task_result = await self._update_task_progress(task_id, label_selector, pod_name)
+                progress_result = await self._update_task_progress(
+                    task_id, label_selector, pod_name
+                )
+                if progress_result is not None:
+                    task_result = progress_result
                 if dsync_task in done:
                     break
 
             dsync_result = await dsync_task
-            
+
             await self._record_dsync_exit_code(task_id, dsync_result)
             await self.job_runner.wait_for_completion(
                 label_selector, success_phases=("Succeeded", "Running")
             )
-            task_result = await self._build_task_result(label_selector, pod_name, tail_lines=10000)
+            task_result = await self._build_task_result(
+                label_selector, pod_name, tail_lines=10000
+            )
             logger.info(f"[Task {task_id}] Task finished")
 
         except asyncio.CancelledError:
@@ -558,35 +610,44 @@ class SyncTaskHandler(BaseTaskHandler):
         else:
             await self.state_store.append_log(task_id, "dsync execution completed")
         finally:
-            ### always run the below code 
-            
+            ### always run the below code
             # enforce to finish
             if not dsync_task.done():
                 dsync_task.cancel()
                 with suppress(asyncio.CancelledError):
                     await dsync_task
-            
-            # enforce to save a log file
-            dir_path = K8S_DMS_LOG_DIRECTORY
-            logname = f"{task_id}.log"
-            if os.path.exists(dir_path):
-                with open(os.path.join(dir_path, logname), "w", encoding="utf-8") as f:
-                    f.write(task_result.launcher_output)
-                logger.info(f"Saved a log: {dir_path}/{logname}")
-            else:
-                logger.error(f"Failed to save a log: {dir_path}/{logname}")
-                
-            # return a log to memorize
-            output = task_result.launcher_output
-            lines = output.splitlines()
-            task_result.launcher_output = "\n".join(lines[-int(K8S_SYNC_LOG_TAIL_LINES):])
-            return task_result
-            
-            
+
+            if task_result is None:
+                with suppress(Exception):
+                    task_result = await self._build_task_result(
+                        label_selector=label_selector,
+                        pod_name=pod_name,
+                        tail_lines=10000,
+                    )
+
+            if task_result is not None:
+                with suppress(Exception):
+                    await self.state_store.set_result(task_id, task_result)
+
+                # enforce to save a log file
+                await self._save_dsync_log_file(
+                    task_id, task_result.launcher_output or ""
+                )
+                task_result.launcher_output = self._tail_output(
+                    task_result.launcher_output or "",
+                    int(K8S_SYNC_LOG_TAIL_LINES),
+                )
+
+        # return a log to memorize
+        if task_result is None:
+            return TaskResult(pod_status="Unknown", launcher_output="")
+        return task_result
+
     async def _record_dsync_exit_code(self, task_id: str, result: ExecResult) -> None:
         exit_code = result.exit_code
         await self.state_store.append_log(
-            task_id, f"dsync exit code: {exit_code if exit_code is not None else 'unknown'} (0 is success)"
+            task_id,
+            f"dsync exit code: {exit_code if exit_code is not None else 'unknown'} (0 is success)",
         )
 
         if exit_code not in (None, 0):
@@ -596,29 +657,72 @@ class SyncTaskHandler(BaseTaskHandler):
                 message = f"{message} - {stderr_output}"
             raise TaskJobError(task_id, message)
 
-    async def _update_task_progress(self, task_id: str, label_selector: str, pod_name: str, tail_lines: Optional[int] = None) -> TaskResult | None:
+    async def _update_task_progress(
+        self,
+        task_id: str,
+        label_selector: str,
+        pod_name: str,
+        tail_lines: Optional[int] = None,
+    ) -> TaskResult | None:
         await self._ensure_task_running(task_id)
 
         try:
-            task_result = await self._build_task_result(label_selector, pod_name, tail_lines)
+            task_result = await self._build_task_result(
+                label_selector, pod_name, tail_lines
+            )
         except TaskJobError as exc:
             logger.warning(f"[Task {task_id}] Failed to build launcher output: {exc}")
-            return
+            return None
 
         await self.state_store.set_result(task_id, task_result)
         return task_result
 
-    async def _build_task_result(self, label_selector: str, pod_name: str, tail_lines: Optional[int]) -> TaskResult:
+    async def _save_dsync_log_file(self, task_id: str, output: str) -> None:
+        dir_path = K8S_DMS_LOG_DIRECTORY
+        log_path = os.path.join(dir_path, f"{task_id}.log")
+        try:
+            os.makedirs(dir_path, exist_ok=True)
+            with open(log_path, "w", encoding="utf-8") as f:
+                f.write(output)
+        except OSError as exc:
+            logger.error(f"[Task {task_id}] Failed to save a log: {log_path} ({exc})")
+            with suppress(Exception):
+                await self.state_store.append_log(
+                    task_id, f"Failed to save dsync log file: {log_path}"
+                )
+        else:
+            logger.info(f"[Task {task_id}] Saved a log: {log_path}")
+            with suppress(Exception):
+                await self.state_store.append_log(
+                    task_id, f"Saved dsync log file: {log_path}"
+                )
+
+    def _tail_output(self, output: str, tail_lines: int) -> str:
+        if tail_lines <= 0:
+            return output
+
+        lines = output.splitlines()
+        return "\n".join(lines[-tail_lines:])
+
+    async def _build_task_result(
+        self, label_selector: str, pod_name: str, tail_lines: Optional[int]
+    ) -> TaskResult:
         pod_statuses = await self.job_runner.list_pod_statuses(label_selector)
         pod_status_summary = self._summarize_pod_statuses(pod_statuses)
 
         launcher_output = await self._build_launcher_output(pod_name, tail_lines)
 
-        return TaskResult(pod_status=pod_status_summary, launcher_output=launcher_output)
+        return TaskResult(
+            pod_status=pod_status_summary, launcher_output=launcher_output
+        )
 
-    async def _build_launcher_output(self, pod_name: str, tail_lines: Optional[int]) -> str:
+    async def _build_launcher_output(
+        self, pod_name: str, tail_lines: Optional[int]
+    ) -> str:
         try:
-            raw_logs = await self.job_runner.get_pod_logs(pod_name=pod_name, tail_lines=tail_lines)
+            raw_logs = await self.job_runner.get_pod_logs(
+                pod_name=pod_name, tail_lines=tail_lines
+            )
         except TaskJobError as exc:
             logger.warning(f"Failed to read logs from {pod_name}: {exc}")
             raw_logs = ""
@@ -642,11 +746,7 @@ class SyncTaskHandler(BaseTaskHandler):
         if tail_lines is None:
             truncated = lines
         else:
-            truncated = (
-                lines[-tail_lines:]
-                if len(lines) > tail_lines
-                else lines
-            )
+            truncated = lines[-tail_lines:] if len(lines) > tail_lines else lines
 
         sections: list[str] = []
         if warnings_and_errors:
@@ -710,7 +810,9 @@ class SyncTaskHandler(BaseTaskHandler):
                         if v <= 0:
                             errors.append(f"Option {flag!r} must be > 0, got {v}")
                     except ValueError:
-                        errors.append(f"Option {flag!r} must be an integer, got {value!r}")
+                        errors.append(
+                            f"Option {flag!r} must be an integer, got {value!r}"
+                        )
                 elif isinstance(expected, set):
                     if value not in expected:
                         errors.append(
@@ -736,7 +838,7 @@ class SyncTaskHandler(BaseTaskHandler):
             tokens.append("--open-noatime")
 
         return tokens
-    
+
     async def _cleanup_job(self, task_id: str, job_name: str, message: str) -> bool:
         state = await self.state_store.get_task(task_id)
         if not state or job_name not in state.active_jobs:
@@ -761,7 +863,9 @@ class SyncTaskHandler(BaseTaskHandler):
         if updated:
             logger.info(f"[Task {task_id}] added active job {job_name}")
 
-    async def _remove_active_job(self, task_id: str, job_name: str, message: str) -> None:
+    async def _remove_active_job(
+        self, task_id: str, job_name: str, message: str
+    ) -> None:
         updated = await self.state_store.remove_active_job(task_id, job_name, message)
         if updated:
             logger.info(f"[Task {task_id}] removed active job {job_name}")
