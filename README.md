@@ -63,7 +63,7 @@ python -m app.main --host 127.0.0.1 --port 8000
 
 ## API reference
 - `POST /tasks/task`: Submit a task. Body: `{ "task_id": "10", "service": "sync", "user_id": "alice", "parameters": {"src": "/home/gpu1", "dst": "/home/cpu1"} }`.
-- `POST /tasks/task`: Submit a delete task. Body: `{ "task_id": "11", "service": "rm", "user_id": "alice", "parameters": {"path": "/home/gpu1/data", "options": "--aggressive"} }`.
+- `POST /tasks/task`: Submit a delete task. Body: `{ "task_id": "11", "service": "rm", "user_id": "alice", "parameters": {"path": "/home/gpu1/data"} }`. Any `options` field in `parameters` is ignored and logged.
 - `POST /tasks/cancel`: Cancel a task. Body: `{ "task_id": "10", "service": "sync", "user_id": "alice" }`.
 - `POST /tasks/priority`: Update priority (`high` or `low`).
 - `POST /tasks/block` / `POST /tasks/enable`: Block or enable all frontend requests.

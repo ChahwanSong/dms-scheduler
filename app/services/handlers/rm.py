@@ -2,8 +2,8 @@
 
 import asyncio
 import logging
+import os
 import pwd
-import shlex
 from contextlib import suppress
 from typing import Any, Dict, Optional
 
@@ -11,16 +11,30 @@ import yaml
 from jinja2 import Template
 from kubernetes.client import V1Pod
 
-from ..cmds import MOUNT_VERIFY_CMD, PATHTYPE_VERIFY_CMD, RM_OWNERSHIP_VERIFY_CMD
+from ..cmds import (
+    MOUNT_VERIFY_CMD,
+    PATHTYPE_VERIFY_CMD,
+    RM_OWNERSHIP_VERIFY_DST_CMD,
+    DRM_RUN_CMD,
+)
 from ..constants import (
+    K8S_DMS_LOG_DIRECTORY,
     K8S_RM_JOB_IMAGE,
     K8S_RM_JOB_LABEL,
+    K8S_RM_LOG_TAIL_LINES,
     K8S_RM_JOB_NAME_PREFIX,
+    K8S_RM_PROGRESS_UPDATE_INTERVAL,
     K8S_RM_JOB_TEMPLATE,
+    K8S_RM_WORKER_HOSTFILE_PATH,
     K8S_RM_VERIFIER_JOB_IMAGE,
     K8S_RM_VERIFIER_JOB_LABEL,
     K8S_RM_VERIFIER_JOB_NAME_PREFIX,
     K8S_RM_VERIFIER_TEMPLATE,
+    K8S_RM_DEFAULT_N_WORKERS,
+    K8S_RM_DEFAULT_MASTER_N_CPU,
+    K8S_RM_DEFAULT_MASTER_MEMORY,
+    K8S_RM_DEFAULT_N_CPU_PER_WORKER,
+    K8S_RM_DEFAULT_WORKER_MEMORY,
     K8S_VOLCANO_HIGH_PRIO_Q,
     K8S_VOLCANO_LOW_PRIO_Q,
 )
@@ -34,7 +48,13 @@ from ..errors import (
 )
 from ..kube import ExecResult, PodMountCheckResult, PodPathCheckResult, VolcanoJobRunner
 from ..state_store import StateStore
-from ...models.schemas import CancelRequest, TaskRecord, TaskRequest, TaskResult, TaskStatus
+from ...models.schemas import (
+    CancelRequest,
+    TaskRecord,
+    TaskRequest,
+    TaskResult,
+    TaskStatus,
+)
 from .base import BaseTaskHandler
 
 logger = logging.getLogger(__name__)
@@ -61,7 +81,15 @@ class RmTaskHandler(BaseTaskHandler):
 
         params = request.parameters or {}
         target_path: str = params.get("path")
-        options = params.get("options") or ""
+        if "options" in params:
+            ignored_options = params.get("options")
+            logger.info(
+                f"[Task {task_id}] Ignoring requested rm options: {ignored_options!r}"
+            )
+            await self.state_store.append_log(
+                task_id,
+                "Ignoring requested 'options'; rm uses fixed '--agreessive' mode",
+            )
 
         mount_path, mount_info = match_allowed_directory(target_path)
         if mount_info is None:
@@ -69,6 +97,7 @@ class RmTaskHandler(BaseTaskHandler):
                 task_id, target_path, f"Invalid path to service '{request.service}'"
             )
 
+        # ------------------- VERIFICATION -------------------
         await self._ensure_task_running(task_id)
         verifier_obj = self._render_template(
             K8S_RM_VERIFIER_TEMPLATE,
@@ -86,7 +115,9 @@ class RmTaskHandler(BaseTaskHandler):
         )
 
         verifier_job_name = f"{K8S_RM_VERIFIER_JOB_NAME_PREFIX}-{task_id}"
-        await self._add_active_job(task_id, verifier_job_name, "Registered rm verifier job")
+        await self._add_active_job(
+            task_id, verifier_job_name, "Registered rm verifier job"
+        )
 
         try:
             await self._ensure_task_running(task_id)
@@ -100,16 +131,11 @@ class RmTaskHandler(BaseTaskHandler):
             )
 
             await self._verify_mount(task_id, verifier_pods, mount_path)
-            path_type = await self._verify_pathtype(task_id, verifier_pods, target_path)
+            await self._verify_pathtype(task_id, verifier_pods, target_path)
 
             if user_id != "root":
-                await self._verify_ownership(task_id, user_id, verifier_pods, target_path)
-
-            if path_type == "__DIR__" and not self._has_recursive_option(options):
-                raise TaskInvalidParametersError(
-                    task_id,
-                    request.service,
-                    ["rm requires a recursive option (-r/--recursive) when target is a directory"],
+                await self._verify_ownership(
+                    task_id, user_id, verifier_pods, target_path
                 )
         finally:
             try:
@@ -121,6 +147,7 @@ class RmTaskHandler(BaseTaskHandler):
                     f"[Task {task_id}] Failed to clean up verifier job {verifier_job_name}"
                 )
 
+        # ------------------- TASK RUNNING -------------------
         queue_name = await self._get_task_queue_name(task_id)
         storage_volumes = [
             {
@@ -131,6 +158,7 @@ class RmTaskHandler(BaseTaskHandler):
                 "type": "Directory",
             }
         ]
+        master_node_group = [{mount_info["label"]: "true"}]
         worker_node_group = [{mount_info["label"]: "true"}]
 
         task_obj = self._render_template(
@@ -141,9 +169,15 @@ class RmTaskHandler(BaseTaskHandler):
                 "job_label": K8S_RM_JOB_LABEL,
                 "job_name_prefix": K8S_RM_JOB_NAME_PREFIX,
                 "service_image": K8S_RM_JOB_IMAGE,
+                "n_workers": int(K8S_RM_DEFAULT_N_WORKERS),
                 "queue_name": queue_name,
                 "storage_volumes": storage_volumes,
+                "master_node_group": master_node_group,
+                "master_n_cpu": int(K8S_RM_DEFAULT_MASTER_N_CPU),
+                "master_memory": K8S_RM_DEFAULT_MASTER_MEMORY,
                 "worker_node_group": worker_node_group,
+                "worker_n_cpu": int(K8S_RM_DEFAULT_N_CPU_PER_WORKER),
+                "worker_memory": K8S_RM_DEFAULT_WORKER_MEMORY,
             },
         )
 
@@ -163,28 +197,13 @@ class RmTaskHandler(BaseTaskHandler):
             )
             pod_name = rm_pods[0].metadata.name
 
-            rm_cmd = self._build_rm_command(target_path, options)
-            exec_task = asyncio.create_task(
-                self.job_runner.exec_in_pod_with_exit_code(
-                    pod_name, ["/bin/bash", "-c", rm_cmd]
-                )
+            result = await self._run_drm(
+                task_id=task_id,
+                label_selector=label_selector,
+                pod_name=pod_name,
+                target_path=target_path,
             )
 
-            try:
-                exec_result = await exec_task
-            except asyncio.CancelledError:
-                raise
-            finally:
-                if not exec_task.done():
-                    exec_task.cancel()
-                    with suppress(asyncio.CancelledError):
-                        await exec_task
-
-            await self._record_rm_exit_code(task_id, exec_result)
-            await self.job_runner.wait_for_completion(
-                label_selector, success_phases=("Succeeded", "Running")
-            )
-            result = await self._build_task_result(label_selector, pod_name, tail_lines=1000)
         finally:
             try:
                 await self._cleanup_job(task_id, task_job_name, "Rm job cleaned up")
@@ -196,7 +215,9 @@ class RmTaskHandler(BaseTaskHandler):
         await self._ensure_task_running(task_id)
         return result
 
-    async def cancel(self, request: CancelRequest, state: TaskRecord | None = None) -> None:
+    async def cancel(
+        self, request: CancelRequest, state: TaskRecord | None = None
+    ) -> None:
         task_state = state or await self.state_store.get_task(request.task_id)
 
         if task_state is None:
@@ -204,7 +225,9 @@ class RmTaskHandler(BaseTaskHandler):
 
         jobs = list(task_state.active_jobs)
         if not jobs:
-            await self.state_store.append_log(request.task_id, "No active rm jobs to cancel")
+            await self.state_store.append_log(
+                request.task_id, "No active rm jobs to cancel"
+            )
             return
 
         for job_name in jobs:
@@ -234,7 +257,11 @@ class RmTaskHandler(BaseTaskHandler):
             output = (
                 await self.job_runner.exec_in_pod(
                     pod_name,
-                    ["/bin/bash", "-c", MOUNT_VERIFY_CMD.format(mount_point=mount_path)],
+                    [
+                        "/bin/bash",
+                        "-c",
+                        MOUNT_VERIFY_CMD.format(mount_point=mount_path),
+                    ],
                 )
             ).strip() or "__NULL__"
             logger.info(f"[Task {task_id}] 'mount' check of {mount_path} => {output}")
@@ -257,7 +284,11 @@ class RmTaskHandler(BaseTaskHandler):
             output = (
                 await self.job_runner.exec_in_pod(
                     pod_name,
-                    ["/bin/bash", "-c", PATHTYPE_VERIFY_CMD.format(target_path=target_path)],
+                    [
+                        "/bin/bash",
+                        "-c",
+                        PATHTYPE_VERIFY_CMD.format(target_path=target_path),
+                    ],
                 )
             ).strip() or "__NULL__"
             logger.info(f"[Task {task_id}] target path type => {output}")
@@ -266,7 +297,9 @@ class RmTaskHandler(BaseTaskHandler):
         target_type = checks[0].output if checks else None
 
         if target_type == "__NOT_FOUND__":
-            raise TaskInvalidDirectoryError(task_id, target_path, "Cannot find the target path")
+            raise TaskInvalidDirectoryError(
+                task_id, target_path, "Cannot find the target path"
+            )
         if target_type not in {"__FILE__", "__DIR__"}:
             raise TaskInvalidDirectoryError(
                 task_id, target_path, f"Unknown target path type: {target_type}"
@@ -294,7 +327,7 @@ class RmTaskHandler(BaseTaskHandler):
                     [
                         "/bin/bash",
                         "-c",
-                        RM_OWNERSHIP_VERIFY_CMD.format(
+                        RM_OWNERSHIP_VERIFY_DST_CMD.format(
                             user_id=user_id, target_path=target_path
                         ),
                     ],
@@ -356,18 +389,11 @@ class RmTaskHandler(BaseTaskHandler):
         if not isinstance(target_path, str) or not target_path:
             errors.append(f"'path' must be a non-empty string, got {repr(target_path)}")
         elif not target_path.startswith("/"):
-            errors.append(f"'path' must be an absolute path starting with '/', got {target_path!r}")
+            errors.append(
+                f"'path' must be an absolute path starting with '/', got {target_path!r}"
+            )
         elif ".." in target_path.split("/"):
             errors.append(f"'path' must not contain '..' segments, got {target_path!r}")
-
-        options = params.get("options")
-        if options is not None:
-            if not isinstance(options, str):
-                errors.append(
-                    f"'options' must be a string if provided, got {type(options).__name__}"
-                )
-            else:
-                errors.extend(self._validate_rm_options(options))
 
         if errors:
             raise TaskInvalidParametersError(request.task_id, request.service, errors)
@@ -381,43 +407,99 @@ class RmTaskHandler(BaseTaskHandler):
                     f"Invalid path to service '{request.service}'",
                 )
 
-    def _validate_rm_options(self, options: str) -> list[str]:
-        errors: list[str] = []
+    async def _run_drm(
+        self,
+        task_id: str,
+        label_selector: str,
+        pod_name: str,
+        target_path: str,
+    ) -> TaskResult:
+        await self._ensure_task_running(task_id)
 
-        allowed_flags = {
-            "-r",
-            "-R",
-            "--recursive",
-            "-f",
-            "--force",
-            "-v",
-            "--verbose",
-            "--one-file-system",
-        }
+        drm_cmd = DRM_RUN_CMD.format(
+            n_slots_per_host=int(K8S_RM_DEFAULT_N_CPU_PER_WORKER),
+            worker_hostfile=K8S_RM_WORKER_HOSTFILE_PATH,
+            options="--agreessive",
+            target_path=target_path,
+        )
+
+        drm_task = asyncio.create_task(
+            self.job_runner.exec_in_pod_with_exit_code(
+                pod_name, ["/bin/bash", "-c", drm_cmd]
+            )
+        )
+        task_result: TaskResult | None = None
+        drm_result: ExecResult | None = None
 
         try:
-            tokens = shlex.split(options)
-        except ValueError as exc:
-            errors.append(f"Failed to parse rm options: {exc}")
-            return errors
+            while True:
+                done, _ = await asyncio.wait(
+                    {drm_task}, timeout=int(K8S_RM_PROGRESS_UPDATE_INTERVAL)
+                )
+                progress_result = await self._update_task_progress(
+                    task_id, label_selector, pod_name
+                )
+                if progress_result is not None:
+                    task_result = progress_result
+                if drm_task in done:
+                    break
 
-        for token in tokens:
-            if token not in allowed_flags:
-                errors.append(f"Unsupported rm option: {token!r}")
+            drm_result = await drm_task
 
-        return errors
+            await self._record_drm_exit_code(task_id, drm_result)
+            await self.job_runner.wait_for_completion(
+                label_selector, success_phases=("Succeeded", "Running")
+            )
+            task_result = await self._build_task_result(
+                label_selector=label_selector, pod_name=pod_name, tail_lines=1000
+            )
+            logger.info(f"[Task {task_id}] Task finished")
+        except asyncio.CancelledError:
+            raise
+        except TaskJobError as exc:
+            await self.state_store.append_log(task_id, f"rm execution failed: {exc}")
+            raise
+        except Exception as exc:
+            await self.state_store.append_log(
+                task_id, f"rm execution failed unexpectedly: {exc}"
+            )
+            raise TaskJobError(task_id, f"Unexpected rm failure: {exc}") from exc
+        else:
+            await self.state_store.append_log(task_id, "rm execution completed")
+        finally:
+            ### always run the below code
+            # enforce to finish
+            if not drm_task.done():
+                drm_task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await drm_task
 
-    def _has_recursive_option(self, options: str) -> bool:
-        tokens = shlex.split(options) if options else []
-        return any(token in {"-r", "-R", "--recursive"} for token in tokens)
+            if task_result is None:
+                with suppress(Exception):
+                    task_result = await self._build_task_result(
+                        label_selector=label_selector,
+                        pod_name=pod_name,
+                        tail_lines=10000,
+                    )
 
-    def _build_rm_command(self, target_path: str, options: str) -> str:
-        tokens = shlex.split(options) if options else []
-        safe_tokens = " ".join(shlex.quote(token) for token in tokens)
-        safe_target = shlex.quote(target_path)
-        return f"rm {safe_tokens} -- {safe_target}".strip()
+            if task_result is not None:
+                with suppress(Exception):
+                    await self.state_store.set_result(task_id, task_result)
 
-    async def _record_rm_exit_code(self, task_id: str, result: ExecResult) -> None:
+                # enforce to save a log file
+                await self._save_rm_log_file(task_id, task_result.launcher_output or "")
+
+                task_result.launcher_output = self._tail_output(
+                    task_result.launcher_output or "",
+                    int(K8S_RM_LOG_TAIL_LINES),
+                )
+
+        # return a log to memorize
+        if task_result is None:
+            return TaskResult(pod_status="Unknown", launcher_output="")
+        return task_result
+
+    async def _record_drm_exit_code(self, task_id: str, result: ExecResult) -> None:
         exit_code = result.exit_code
         await self.state_store.append_log(
             task_id,
@@ -431,13 +513,62 @@ class RmTaskHandler(BaseTaskHandler):
                 message = f"{message} - {stderr_output}"
             raise TaskJobError(task_id, message)
 
+    async def _update_task_progress(
+        self,
+        task_id: str,
+        label_selector: str,
+        pod_name: str,
+        tail_lines: Optional[int] = None,
+    ) -> TaskResult | None:
+        await self._ensure_task_running(task_id)
+
+        try:
+            task_result = await self._build_task_result(
+                label_selector, pod_name, tail_lines
+            )
+        except TaskJobError as exc:
+            logger.warning(f"[Task {task_id}] Failed to build launcher output: {exc}")
+            return None
+
+        await self.state_store.set_result(task_id, task_result)
+        return task_result
+
+    async def _save_rm_log_file(self, task_id: str, output: str) -> None:
+        dir_path = K8S_DMS_LOG_DIRECTORY
+        log_path = os.path.join(dir_path, f"{task_id}.log")
+        try:
+            os.makedirs(dir_path, exist_ok=True)
+            with open(log_path, "w", encoding="utf-8") as f:
+                f.write(output)
+        except OSError as exc:
+            logger.error(f"[Task {task_id}] Failed to save a log: {log_path} ({exc})")
+            with suppress(Exception):
+                await self.state_store.append_log(
+                    task_id, f"Failed to save rm log file: {log_path}"
+                )
+        else:
+            logger.info(f"[Task {task_id}] Saved a log: {log_path}")
+            with suppress(Exception):
+                await self.state_store.append_log(
+                    task_id, f"Saved rm log file: {log_path}"
+                )
+
+    def _tail_output(self, output: str, tail_lines: int) -> str:
+        if tail_lines <= 0:
+            return output
+
+        lines = output.splitlines()
+        return "\n".join(lines[-tail_lines:])
+
     async def _build_task_result(
         self, label_selector: str, pod_name: str, tail_lines: Optional[int]
     ) -> TaskResult:
         pod_statuses = await self.job_runner.list_pod_statuses(label_selector)
         pod_status_summary = self._summarize_pod_statuses(pod_statuses)
         launcher_output = await self._build_launcher_output(pod_name, tail_lines)
-        return TaskResult(pod_status=pod_status_summary, launcher_output=launcher_output)
+        return TaskResult(
+            pod_status=pod_status_summary, launcher_output=launcher_output
+        )
 
     async def _build_launcher_output(
         self, pod_name: str, tail_lines: Optional[int]
@@ -457,9 +588,7 @@ class RmTaskHandler(BaseTaskHandler):
             return "Unknown"
         return " \n".join(f"{name}: {status}" for name, status in pod_statuses.items())
 
-    def _extract_relevant_output(
-        self, output: str, tail_lines: Optional[int]
-    ) -> str:
+    def _extract_relevant_output(self, output: str, tail_lines: Optional[int]) -> str:
         lines = output.splitlines()
 
         def _is_warning_or_error(line: str) -> bool:
@@ -467,7 +596,9 @@ class RmTaskHandler(BaseTaskHandler):
             return "warn" in lower or "error" in lower or "fail" in lower
 
         warnings_and_errors = [line for line in lines if _is_warning_or_error(line)]
-        truncated = lines[-tail_lines:] if tail_lines and len(lines) > tail_lines else lines
+        truncated = (
+            lines[-tail_lines:] if tail_lines and len(lines) > tail_lines else lines
+        )
 
         sections: list[str] = []
         if warnings_and_errors:
@@ -503,7 +634,9 @@ class RmTaskHandler(BaseTaskHandler):
         if updated:
             logger.info(f"[Task {task_id}] added active job {job_name}")
 
-    async def _remove_active_job(self, task_id: str, job_name: str, message: str) -> None:
+    async def _remove_active_job(
+        self, task_id: str, job_name: str, message: str
+    ) -> None:
         updated = await self.state_store.remove_active_job(task_id, job_name, message)
         if updated:
             logger.info(f"[Task {task_id}] removed active job {job_name}")

@@ -46,7 +46,8 @@ Structured, stdout logging is configured at startup through `DMS_LOG_LEVEL` and 
 ## RM handler directory validation
 - Allowed prefixes are defined in `app/services/constants.py` (`ALLOWED_DIRECTORIES`), and requests must place `path` under one of those prefixes.
 - If validation fails, the scheduler raises `TaskInvalidDirectoryError` with a message of the form `Invalid path to service 'rm': <path>`, which surfaces as a 400/404 response in the API layer depending on context.
-- RM directory targets must include a recursive option (`-r`/`--recursive`) before delete jobs are launched.
+- RM execution always uses the fixed delete flag `--agreessive`.
+- If a request includes `parameters.options` for `rm`, the value is ignored and a task log entry is appended.
 
 ## Running the API server
 Use the built-in launcher to start Uvicorn with sensible defaults:
