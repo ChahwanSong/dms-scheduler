@@ -572,6 +572,7 @@ class SyncTaskHandler(BaseTaskHandler):
             )
         )
         task_result: TaskResult | None = None
+        dsync_result: ExecResult | None = None
 
         try:
             while True:
@@ -630,7 +631,7 @@ class SyncTaskHandler(BaseTaskHandler):
                     await self.state_store.set_result(task_id, task_result)
 
                 # enforce to save a log file
-                await self._save_dsync_log_file(
+                await self._save_sync_log_file(
                     task_id, task_result.launcher_output or ""
                 )
                 task_result.launcher_output = self._tail_output(
@@ -677,7 +678,7 @@ class SyncTaskHandler(BaseTaskHandler):
         await self.state_store.set_result(task_id, task_result)
         return task_result
 
-    async def _save_dsync_log_file(self, task_id: str, output: str) -> None:
+    async def _save_sync_log_file(self, task_id: str, output: str) -> None:
         dir_path = K8S_DMS_LOG_DIRECTORY
         log_path = os.path.join(dir_path, f"{task_id}.log")
         try:

@@ -454,6 +454,7 @@ class RmTaskHandler(BaseTaskHandler):
                 label_selector=label_selector, pod_name=pod_name, tail_lines=1000
             )
             logger.info(f"[Task {task_id}] Task finished")
+
         except asyncio.CancelledError:
             raise
         except TaskJobError as exc:
