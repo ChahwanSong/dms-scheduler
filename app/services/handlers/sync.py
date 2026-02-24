@@ -171,12 +171,6 @@ class SyncTaskHandler(BaseTaskHandler):
                 )
 
         # ------------------- TASK RUNNING -------------------
-        # TODO: operation type 정하기 (dsync, nsync)
-        # src, dst 경로가 같은 mount_path 인지, 또는 mount_path 가 nsync 인지 dsync 로
-        # 가능한지 체크 로직 추가
-        op_type = "dsync"
-
-        # TODO: sync 파라미터
         master_node_group = [
             {src_info["label"]: "true"},  # src node 중에 마스터 할당
         ]
@@ -184,19 +178,25 @@ class SyncTaskHandler(BaseTaskHandler):
             {src_info["label"]: "true"},
             {dst_info["label"]: "true"},
         ]
-        storage_volumes = [
-            {
-                "name": make_volume_name_from_path(p),
-                "mountPath": p,
-                "hostPath": p,
-                "readOnly": False,
-                "type": "Directory",
-            }
-            for p in set([src_mount_path, dst_mount_path])
-        ]
+
         queue_name = await self._get_task_queue_name(task_id)
 
+        # TODO: operation type 정하기 (dsync, nsync)
+        op_type = "dsync"
+
         if op_type == "dsync":
+
+            storage_volumes = [
+                {
+                    "name": make_volume_name_from_path(p),
+                    "mountPath": p,
+                    "hostPath": p,
+                    "readOnly": False,
+                    "type": "Directory",
+                }
+                for p in set([src_mount_path, dst_mount_path])
+                if p is not None
+            ]
             task_obj = self._render_template(
                 K8S_SYNC_D_JOB_TEMPLATE,
                 {
