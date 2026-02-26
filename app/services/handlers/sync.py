@@ -136,6 +136,11 @@ class SyncTaskHandler(BaseTaskHandler):
                 verifier_obj,
                 default=2,
             )
+            logger.info(
+                "[Task %s] Expected verifier pod count: %d",
+                task_id,
+                verifier_expected,
+            )
             await self.job_runner.wait_for_pods_scheduled(
                 label_selector=verifier_label_selector,
                 expected=verifier_expected,
@@ -249,6 +254,11 @@ class SyncTaskHandler(BaseTaskHandler):
                 expected_pods = self.job_runner.infer_expected_pod_count(
                     task_obj,
                     default=1 + int(K8S_SYNC_D_DEFAULT_N_WORKERS),
+                )
+                logger.info(
+                    "[Task %s] Expected sync pod count: %d",
+                    task_id,
+                    expected_pods,
                 )
                 await self.job_runner.wait_for_pods_scheduled(
                     label_selector=label_selector,
