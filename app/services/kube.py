@@ -186,6 +186,7 @@ class VolcanoJobRunner:
             deadline = time.time() + timeout
             last_seen: list[V1Pod] = []
             last_summary = "No pods observed yet"
+            previous_summary: Optional[str] = None
 
             while time.time() < deadline:
                 pods = core_api.list_namespaced_pod(
@@ -193,7 +194,15 @@ class VolcanoJobRunner:
                     label_selector=label_selector,
                 ).items
                 last_seen = pods
-                last_summary = self._summarize_pods(pods)
+                summary = self._summarize_pods(pods)
+                if summary != previous_summary:
+                    logger.info(
+                        "Pod scheduling status changed for %s: %s",
+                        label_selector,
+                        summary,
+                    )
+                    previous_summary = summary
+                last_summary = summary
 
                 failed = [p for p in pods if self._pod_phase(p) == "Failed"]
                 if failed:
@@ -229,13 +238,22 @@ class VolcanoJobRunner:
             deadline = time.time() + timeout
             last_seen: list[V1Pod] = []
             last_summary = "No pods observed yet"
+            previous_summary: Optional[str] = None
 
             while time.time() < deadline:
                 pods = core_api.list_namespaced_pod(
                     namespace=self.namespace, label_selector=label_selector
                 ).items
                 last_seen = pods
-                last_summary = self._summarize_pods(pods)
+                summary = self._summarize_pods(pods)
+                if summary != previous_summary:
+                    logger.info(
+                        "Pod readiness status changed for %s: %s",
+                        label_selector,
+                        summary,
+                    )
+                    previous_summary = summary
+                last_summary = summary
 
                 ready = [p for p in pods if self._is_pod_ready(p)]
                 failed = [p for p in pods if self._pod_phase(p) == "Failed"]
