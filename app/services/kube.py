@@ -4,7 +4,7 @@ import asyncio
 import logging
 import time
 from dataclasses import dataclass
-from typing import Iterable, Optional, Tuple
+from typing import Iterable, Optional, Tuple, Any, Mapping
 
 from kubernetes import client, config
 from kubernetes.client import ApiException, V1DeleteOptions, V1Pod
@@ -289,11 +289,11 @@ class VolcanoJobRunner:
         self, pod_name: str, container: Optional[str] = None, tail_lines: Optional[int] = None, request_timeout: int = 10,
     ) -> str:
         core_api, _ = self._require_clients()
-        
+
         # by default, get lines at tail
         if tail_lines is None:
             tail_lines = 100
-            
+
         def _logs() -> str:
             return core_api.read_namespaced_pod_log(
                 name=pod_name,
@@ -327,6 +327,49 @@ class VolcanoJobRunner:
             return {}
 
         return {pod.metadata.name: pod.status.phase or "Unknown" for pod in pods}
+
+    async def get_node_label_map(self) -> dict[str, dict[str, str]]:
+        """Return mapping of node_name -> labels.
+
+        Example:
+            {
+              "ion2401": {"kubernetes.io/hostname": "ion2401", "mount-A": "true", ...},
+              ...
+            }
+        """
+        core_api, _ = self._require_clients()
+
+        def _list_nodes() -> dict[str, dict[str, str]]:
+            nodes = core_api.list_node().items
+            out: dict[str, dict[str, str]] = {}
+
+            for n in nodes:
+                name = (n.metadata and n.metadata.name) or ""
+                if not name:
+                    continue
+                labels = (n.metadata and n.metadata.labels) or {}
+                # kubernetes client가 dict[str,str]로 주지만 안전하게 copy
+                out[name] = dict(labels)
+
+            return out
+
+        try:
+            return await asyncio.to_thread(_list_nodes)
+        except ApiException as exc:  # pragma: no cover - network side effects
+            logger.warning("Failed to list nodes: %s", exc)
+            return {}
+
+    # 필요하면 특정 label만 필터링 버전도 같이 (옵션)
+    async def get_node_label_map_filtered(
+        self, label_keys: Iterable[str]
+    ) -> dict[str, dict[str, str]]:
+        """Return node_name -> subset of labels for given keys."""
+        label_keys_set = set(label_keys)
+        full = await self.get_node_label_map()
+        return {
+            node: {k: v for k, v in labels.items() if k in label_keys_set}
+            for node, labels in full.items()
+        }
 
     @staticmethod
     def _is_pod_ready(pod: V1Pod) -> bool:

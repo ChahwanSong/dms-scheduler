@@ -110,8 +110,6 @@ class SyncTaskHandler(BaseTaskHandler):
                 "verifier_job_label": K8S_SYNC_VERIFIER_JOB_LABEL,
                 "queue_name": K8S_VOLCANO_HIGH_PRIO_Q,
                 "verifier_image": K8S_SYNC_VERIFIER_JOB_IMAGE,
-                "src_path": src,
-                "dst_path": dst,
                 "src_checker_node": {src_info["label"]: "true"},
                 "dst_checker_node": {dst_info["label"]: "true"},
                 "src_volume_name": make_volume_name_from_path(src_mount_path),
@@ -182,10 +180,18 @@ class SyncTaskHandler(BaseTaskHandler):
         queue_name = await self._get_task_queue_name(task_id)
 
         # TODO: operation type 정하기 (dsync, nsync)
+        node_labels = await self.job_runner.get_node_label_map_filtered([src_info["label"],  dst_info["label"]])        
+        
+        exists = any(
+            labels.get(src_info["label"]) == "true" and labels.get(dst_info["label"]) == "true"
+            for labels in node_labels.values()
+        )
+        print(f"DSYNC? {exists}")
+        
+        
         op_type = "dsync"
 
         if op_type == "dsync":
-
             storage_volumes = [
                 {
                     "name": make_volume_name_from_path(p),
@@ -377,9 +383,10 @@ class SyncTaskHandler(BaseTaskHandler):
             raise TaskInvalidDirectoryError(
                 task_id, src_path, "Cannot find the src path"
             )
-        elif src_path_type != "__FILE__" and src_path_type != "__DIR__":
+        
+        if src_path_type not in {"__FILE__", "__DIR__"}:
             raise TaskInvalidDirectoryError(
-                task_id, src_path, f"Unknown src path type: {src_path_type}"
+                task_id, src_path, f"Invalid src path type: {src_path_type}"
             )
 
         if dst_path_type != "__DIR__":
@@ -627,8 +634,8 @@ class SyncTaskHandler(BaseTaskHandler):
                     )
 
             if task_result is not None:
-                with suppress(Exception):
-                    await self.state_store.set_result(task_id, task_result)
+                # with suppress(Exception):
+                #     await self.state_store.set_result(task_id, task_result)
 
                 # enforce to save a log file
                 await self._save_sync_log_file(
@@ -754,7 +761,7 @@ class SyncTaskHandler(BaseTaskHandler):
             sections.append("[Errors / Warnings]")
             sections.extend(warnings_and_errors)
 
-        sections.append(f"\n\n[Last lines]")
+        sections.append(f"\n\n[Last ({tail_lines}) lines]")
         sections.extend(truncated)
 
         return "\n".join(sections)

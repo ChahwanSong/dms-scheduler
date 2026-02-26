@@ -9,10 +9,6 @@ ALLOWED_DIRECTORIES = {
         "label": "mount-gpu1",
         "info": "IBM GPFS 2024 SSC Home GPU Storage",
     },
-    "/home/tmp": {
-        "label": "mount-gpu1",
-        "info": "IBM GPFS 2024 SSC Home GPU Storage",
-    },
 }
 
 K8S_DMS_NAMESPACE = "dms-service"

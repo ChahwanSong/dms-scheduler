@@ -15,6 +15,16 @@ PATHTYPE_VERIFY_CMD = (
     "  echo __FILE__; "
     "elif [ -d {target_path} ]; then "
     "  echo __DIR__; "
+    "elif [ -L {target_path} ]; then "
+    "  echo __SYMLINK__; "
+    "elif [ -S {target_path} ]; then "
+    "  echo __SOCKET__; "
+    "elif [ -p {target_path} ]; then "
+    "  echo __FIFO__; "
+    "elif [ -b {target_path} ]; then "
+    "  echo __BLOCK_DEVICE__; "
+    "elif [ -c {target_path} ]; then "
+    "  echo __CHAR_DEVICE__; "
     "else "
     "  echo __OTHER__; "
     "fi"
@@ -48,6 +58,7 @@ SYNC_OWNERSHIP_VERIFY_DST_CMD = (
     "fi' bash {target_path} 2>/dev/null"
 )
 
+# Linux에서 파일 삭제 조건: parent directory에 write 권한 (-w), execute 권한 (-x)
 RM_OWNERSHIP_VERIFY_DST_CMD = (
     "sudo -u {user_id} bash -c '"
     'target="$1"; '
