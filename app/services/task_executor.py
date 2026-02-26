@@ -28,6 +28,7 @@ logger = logging.getLogger(__name__)
 class TaskExecutor:
     def __init__(self, state_store: StateStore):
         self.state_store = state_store
+        self._running_tasks: Dict[str, asyncio.Task[None]] = {}
         job_runner = VolcanoJobRunner(K8S_DMS_NAMESPACE)
         self._handlers: Dict[str, BaseTaskHandler] = {
             "sync": SyncTaskHandler(job_runner, state_store),
@@ -69,7 +70,14 @@ class TaskExecutor:
             await self._transition(request.task_id, TaskStatus.failed, str(exc))
             raise
 
-        asyncio.create_task(self._run_task(request, handler))
+        running_task = asyncio.create_task(self._run_task(request, handler))
+        self._running_tasks[request.task_id] = running_task
+
+        def _cleanup(done_task: asyncio.Task[None], task_id: str = request.task_id) -> None:
+            if self._running_tasks.get(task_id) is done_task:
+                self._running_tasks.pop(task_id, None)
+
+        running_task.add_done_callback(_cleanup)
         return state
 
     async def _run_task(self, request: TaskRequest, handler: BaseTaskHandler) -> None:
@@ -126,6 +134,11 @@ class TaskExecutor:
         updated = await self._transition(
             request.task_id, TaskStatus.cancel_requested, "Cancellation requested at scheduler"
         )
+
+        running_task = self._running_tasks.get(request.task_id)
+        if running_task and not running_task.done():
+            running_task.cancel()
+
         await handler.cancel(request, updated)
         return await self.state_store.get_task(request.task_id)
 

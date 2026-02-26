@@ -181,114 +181,111 @@ class VolcanoJobRunner:
         self, label_selector: str, expected: int, timeout: int = 120
     ) -> list[V1Pod]:
         core_api, _ = self._require_clients()
+        deadline = time.time() + timeout
+        last_seen: list[V1Pod] = []
+        last_summary = "No pods observed yet"
+        previous_summary: Optional[str] = None
 
-        def _wait() -> list[V1Pod]:
-            deadline = time.time() + timeout
-            last_seen: list[V1Pod] = []
-            last_summary = "No pods observed yet"
-            previous_summary: Optional[str] = None
-
-            while time.time() < deadline:
-                pods = core_api.list_namespaced_pod(
+        while time.time() < deadline:
+            pods = await asyncio.to_thread(
+                lambda: core_api.list_namespaced_pod(
                     namespace=self.namespace,
                     label_selector=label_selector,
                 ).items
-                last_seen = pods
-                summary = self._summarize_pods(pods)
-                if summary != previous_summary:
-                    logger.info(
-                        "Pod scheduling status changed for %s: %s",
-                        label_selector,
-                        summary,
-                    )
-                    previous_summary = summary
-                last_summary = summary
-
-                failed = [p for p in pods if self._pod_phase(p) == "Failed"]
-                if failed:
-                    names = ", ".join(self._pod_name(p) for p in failed)
-                    raise TaskJobError(
-                        label_selector,
-                        f"Pods failed before scheduling: {names}. {last_summary}",
-                    )
-
-                scheduled = [p for p in pods if self._is_pod_scheduled(p)]
-                if len(scheduled) >= expected:
-                    return scheduled
-
-                time.sleep(1)
-
-            names = [self._pod_name(p) for p in last_seen]
-            raise TaskJobError(
-                label_selector,
-                (
-                    "Timed out waiting for pods to be scheduled by Volcano "
-                    f"(expected {expected}). Last seen: {names}. {last_summary}"
-                ),
             )
+            last_seen = pods
+            summary = self._summarize_pods(pods)
+            if summary != previous_summary:
+                logger.info(
+                    "Pod scheduling status changed for %s: %s",
+                    label_selector,
+                    summary,
+                )
+                previous_summary = summary
+            last_summary = summary
 
-        return await asyncio.to_thread(_wait)
+            failed = [p for p in pods if self._pod_phase(p) == "Failed"]
+            if failed:
+                names = ", ".join(self._pod_name(p) for p in failed)
+                raise TaskJobError(
+                    label_selector,
+                    f"Pods failed before scheduling: {names}. {last_summary}",
+                )
+
+            scheduled = [p for p in pods if self._is_pod_scheduled(p)]
+            if len(scheduled) >= expected:
+                return scheduled
+
+            await asyncio.sleep(1)
+
+        names = [self._pod_name(p) for p in last_seen]
+        raise TaskJobError(
+            label_selector,
+            (
+                "Timed out waiting for pods to be scheduled by Volcano "
+                f"(expected {expected}). Last seen: {names}. {last_summary}"
+            ),
+        )
 
     async def wait_for_pods_ready(
         self, label_selector: str, expected: int, timeout: int = 120
     ) -> list[V1Pod]:
         core_api, _ = self._require_clients()
+        deadline = time.time() + timeout
+        last_seen: list[V1Pod] = []
+        last_summary = "No pods observed yet"
+        previous_summary: Optional[str] = None
 
-        def _wait() -> list[V1Pod]:
-            deadline = time.time() + timeout
-            last_seen: list[V1Pod] = []
-            last_summary = "No pods observed yet"
-            previous_summary: Optional[str] = None
-
-            while time.time() < deadline:
-                pods = core_api.list_namespaced_pod(
-                    namespace=self.namespace, label_selector=label_selector
+        while time.time() < deadline:
+            pods = await asyncio.to_thread(
+                lambda: core_api.list_namespaced_pod(
+                    namespace=self.namespace,
+                    label_selector=label_selector,
                 ).items
-                last_seen = pods
-                summary = self._summarize_pods(pods)
-                if summary != previous_summary:
-                    logger.info(
-                        "Pod readiness status changed for %s: %s",
-                        label_selector,
-                        summary,
-                    )
-                    previous_summary = summary
-                last_summary = summary
-
-                ready = [p for p in pods if self._is_pod_ready(p)]
-                failed = [p for p in pods if self._pod_phase(p) == "Failed"]
-
-                if failed:
-                    names = ", ".join(self._pod_name(p) for p in failed)
-                    raise TaskJobError(
-                        label_selector, f"Pods failed before ready: {names}. {last_summary}"
-                    )
-
-                fatal_issue = self._find_fatal_runtime_issue(pods)
-                if fatal_issue:
-                    raise TaskJobError(
-                        label_selector,
-                        (
-                            "Pods entered fatal runtime state before readiness: "
-                            f"{fatal_issue}. {last_summary}"
-                        ),
-                    )
-
-                if len(ready) >= expected:
-                    return ready
-
-                time.sleep(1)
-
-            names = [self._pod_name(p) for p in last_seen]
-            raise TaskJobError(
-                label_selector,
-                (
-                    "Timed out waiting for pods to become Ready "
-                    f"(expected {expected}). Last seen: {names}. {last_summary}"
-                ),
             )
+            last_seen = pods
+            summary = self._summarize_pods(pods)
+            if summary != previous_summary:
+                logger.info(
+                    "Pod readiness status changed for %s: %s",
+                    label_selector,
+                    summary,
+                )
+                previous_summary = summary
+            last_summary = summary
 
-        return await asyncio.to_thread(_wait)
+            ready = [p for p in pods if self._is_pod_ready(p)]
+            failed = [p for p in pods if self._pod_phase(p) == "Failed"]
+
+            if failed:
+                names = ", ".join(self._pod_name(p) for p in failed)
+                raise TaskJobError(
+                    label_selector, f"Pods failed before ready: {names}. {last_summary}"
+                )
+
+            fatal_issue = self._find_fatal_runtime_issue(pods)
+            if fatal_issue:
+                raise TaskJobError(
+                    label_selector,
+                    (
+                        "Pods entered fatal runtime state before readiness: "
+                        f"{fatal_issue}. {last_summary}"
+                    ),
+                )
+
+            if len(ready) >= expected:
+                return ready
+
+            await asyncio.sleep(1)
+
+        names = [self._pod_name(p) for p in last_seen]
+        raise TaskJobError(
+            label_selector,
+            (
+                "Timed out waiting for pods to become Ready "
+                f"(expected {expected}). Last seen: {names}. {last_summary}"
+            ),
+        )
 
     async def wait_for_completion(
         self,
