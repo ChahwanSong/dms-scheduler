@@ -107,7 +107,6 @@ class RmTaskHandler(BaseTaskHandler):
                 "verifier_job_label": K8S_RM_VERIFIER_JOB_LABEL,
                 "queue_name": K8S_VOLCANO_HIGH_PRIO_Q,
                 "verifier_image": K8S_RM_VERIFIER_JOB_IMAGE,
-                "target_path": target_path,
                 "target_checker_node": {mount_info["label"]: "true"},
                 "target_volume_name": make_volume_name_from_path(mount_path),
                 "target_mount_path": mount_path,
@@ -137,6 +136,13 @@ class RmTaskHandler(BaseTaskHandler):
                 await self._verify_ownership(
                     task_id, user_id, verifier_pods, target_path
                 )
+
+            _temp = """TEST_CMD = "while true; do date '+%Y-%m-%d %H:%M:%S'; sleep 1; done"
+            await self._ensure_task_running(task_id)
+            logger.info(f"Run infinite loop on {verifier_pods[0].metadata.name}")
+            await self.job_runner.exec_in_pod(verifier_pods[0].metadata.name,
+                    ["/bin/bash", "-c", TEST_CMD]) """
+
         finally:
             try:
                 await self._cleanup_job(
@@ -302,7 +308,7 @@ class RmTaskHandler(BaseTaskHandler):
             )
         if target_type not in {"__FILE__", "__DIR__"}:
             raise TaskInvalidDirectoryError(
-                task_id, target_path, f"Unknown target path type: {target_type}"
+                task_id, target_path, f"Invalid target path type: {target_type}"
             )
 
         await self.state_store.append_log(task_id, "Pathtype verification is done")
@@ -419,7 +425,7 @@ class RmTaskHandler(BaseTaskHandler):
         drm_cmd = DRM_RUN_CMD.format(
             n_slots_per_host=int(K8S_RM_DEFAULT_N_CPU_PER_WORKER),
             worker_hostfile=K8S_RM_WORKER_HOSTFILE_PATH,
-            options="--agreessive",
+            options="--aggressive",
             target_path=target_path,
         )
 
@@ -484,8 +490,8 @@ class RmTaskHandler(BaseTaskHandler):
                     )
 
             if task_result is not None:
-                with suppress(Exception):
-                    await self.state_store.set_result(task_id, task_result)
+                # with suppress(Exception):
+                #     await self.state_store.set_result(task_id, task_result)
 
                 # enforce to save a log file
                 await self._save_rm_log_file(task_id, task_result.launcher_output or "")
@@ -606,7 +612,7 @@ class RmTaskHandler(BaseTaskHandler):
             sections.append("[Errors / Warnings]")
             sections.extend(warnings_and_errors)
 
-        sections.append("\n\n[Last lines]")
+        sections.append(f"\n\n[Last ({tail_lines}) lines]")
         sections.extend(truncated)
 
         return "\n".join(sections)
