@@ -19,6 +19,8 @@ from ..cmds import (
 )
 from ..constants import (
     K8S_DMS_LOG_DIRECTORY,
+    POD_SCHEDULE_TIMEOUT_SECONDS,
+    POD_READY_TIMEOUT_SECONDS,
     K8S_RM_JOB_IMAGE,
     K8S_RM_JOB_LABEL,
     K8S_RM_LOG_TAIL_LINES,
@@ -123,10 +125,20 @@ class RmTaskHandler(BaseTaskHandler):
             await self.job_runner.create_job(verifier_obj)
 
             await self._ensure_task_running(task_id)
+            verifier_label_selector = f"{K8S_RM_VERIFIER_JOB_LABEL}={task_id}"
+            verifier_expected = self.job_runner.infer_expected_pod_count(
+                verifier_obj,
+                default=1,
+            )
+            await self.job_runner.wait_for_pods_scheduled(
+                label_selector=verifier_label_selector,
+                expected=verifier_expected,
+                timeout=POD_SCHEDULE_TIMEOUT_SECONDS,
+            )
             verifier_pods = await self.job_runner.wait_for_pods_ready(
-                label_selector=f"{K8S_RM_VERIFIER_JOB_LABEL}={task_id}",
-                expected=1,
-                timeout=180,
+                label_selector=verifier_label_selector,
+                expected=verifier_expected,
+                timeout=POD_READY_TIMEOUT_SECONDS,
             )
 
             await self._verify_mount(task_id, verifier_pods, mount_path)
@@ -196,12 +208,21 @@ class RmTaskHandler(BaseTaskHandler):
 
             await self._ensure_task_running(task_id)
             label_selector = f"{K8S_RM_JOB_LABEL}={task_id}"
+            expected_pods = self.job_runner.infer_expected_pod_count(
+                task_obj,
+                default=1 + int(K8S_RM_DEFAULT_N_WORKERS),
+            )
+            await self.job_runner.wait_for_pods_scheduled(
+                label_selector=label_selector,
+                expected=expected_pods,
+                timeout=POD_SCHEDULE_TIMEOUT_SECONDS,
+            )
             rm_pods = await self.job_runner.wait_for_pods_ready(
                 label_selector=label_selector,
-                expected=1,
-                timeout=180,
+                expected=expected_pods,
+                timeout=POD_READY_TIMEOUT_SECONDS,
             )
-            pod_name = rm_pods[0].metadata.name
+            pod_name = self._pick_master_pod(task_id, rm_pods).metadata.name
 
             result = await self._run_drm(
                 task_id=task_id,
@@ -386,6 +407,24 @@ class RmTaskHandler(BaseTaskHandler):
         except Exception as exc:  # pragma: no cover - render failure path
             raise TaskTemplateRenderError(template_path, exc) from exc
 
+    @staticmethod
+    def _pick_master_pod(task_id: str, pods: list[V1Pod]) -> V1Pod:
+        if not pods:
+            raise TaskJobError(task_id, "No pods found for rm job")
+
+        for pod in pods:
+            labels = pod.metadata.labels or {}
+            task_spec = labels.get("volcano.sh/task-spec", "")
+            if isinstance(task_spec, str) and "master" in task_spec.lower():
+                return pod
+
+        for pod in pods:
+            name = (pod.metadata.name or "").lower()
+            if "master" in name:
+                return pod
+
+        return pods[0]
+
     async def _check_format_rm(self, request: TaskRequest) -> None:
         params: Dict[str, Any] = request.parameters or {}
         errors: list[str] = []
@@ -505,6 +544,21 @@ class RmTaskHandler(BaseTaskHandler):
         if task_result is None:
             return TaskResult(pod_status="Unknown", launcher_output="")
         return task_result
+
+    async def _run_rm(
+        self,
+        task_id: str,
+        label_selector: str,
+        pod_name: str,
+        target_path: str,
+    ) -> TaskResult:
+        """Backward-compatible alias for the legacy helper name."""
+        return await self._run_drm(
+            task_id=task_id,
+            label_selector=label_selector,
+            pod_name=pod_name,
+            target_path=target_path,
+        )
 
     async def _record_drm_exit_code(self, task_id: str, result: ExecResult) -> None:
         exit_code = result.exit_code

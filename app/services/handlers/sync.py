@@ -14,6 +14,8 @@ from kubernetes.client import V1Pod
 
 from ..constants import (
     K8S_DMS_LOG_DIRECTORY,
+    POD_SCHEDULE_TIMEOUT_SECONDS,
+    POD_READY_TIMEOUT_SECONDS,
     K8S_SYNC_D_JOB_TEMPLATE,
     K8S_SYNC_D_JOB_IMAGE,
     K8S_SYNC_D_WORKER_HOSTFILE_PATH,
@@ -129,10 +131,20 @@ class SyncTaskHandler(BaseTaskHandler):
             await self.job_runner.create_job(verifier_obj)
 
             await self._ensure_task_running(task_id)
+            verifier_label_selector = f"{K8S_SYNC_VERIFIER_JOB_LABEL}={task_id}"
+            verifier_expected = self.job_runner.infer_expected_pod_count(
+                verifier_obj,
+                default=2,
+            )
+            await self.job_runner.wait_for_pods_scheduled(
+                label_selector=verifier_label_selector,
+                expected=verifier_expected,
+                timeout=POD_SCHEDULE_TIMEOUT_SECONDS,
+            )
             verifier_pods = await self.job_runner.wait_for_pods_ready(
-                label_selector=f"{K8S_SYNC_VERIFIER_JOB_LABEL}={task_id}",
-                expected=2,
-                timeout=180,
+                label_selector=verifier_label_selector,
+                expected=verifier_expected,
+                timeout=POD_READY_TIMEOUT_SECONDS,
             )
 
             await self._verify_mount(
@@ -234,12 +246,21 @@ class SyncTaskHandler(BaseTaskHandler):
 
                 await self._ensure_task_running(task_id)
                 label_selector = f"{K8S_SYNC_JOB_LABEL}={task_id}"
+                expected_pods = self.job_runner.infer_expected_pod_count(
+                    task_obj,
+                    default=1 + int(K8S_SYNC_D_DEFAULT_N_WORKERS),
+                )
+                await self.job_runner.wait_for_pods_scheduled(
+                    label_selector=label_selector,
+                    expected=expected_pods,
+                    timeout=POD_SCHEDULE_TIMEOUT_SECONDS,
+                )
                 sync_pods = await self.job_runner.wait_for_pods_ready(
                     label_selector=label_selector,
-                    expected=2,
-                    timeout=180,
+                    expected=expected_pods,
+                    timeout=POD_READY_TIMEOUT_SECONDS,
                 )
-                pod_name = sync_pods[0].metadata.name
+                pod_name = self._pick_master_pod(task_id, sync_pods).metadata.name
 
                 _temp = """TEST_CMD = "while true; do date '+%Y-%m-%d %H:%M:%S'; sleep 1; done"
                 await self._ensure_task_running(task_id)
@@ -498,6 +519,24 @@ class SyncTaskHandler(BaseTaskHandler):
             return yaml.safe_load(rendered)
         except Exception as exc:  # pragma: no cover - render failure path
             raise TaskTemplateRenderError(template_path, exc) from exc
+
+    @staticmethod
+    def _pick_master_pod(task_id: str, pods: list[V1Pod]) -> V1Pod:
+        if not pods:
+            raise TaskJobError(task_id, "No pods found for sync job")
+
+        for pod in pods:
+            labels = pod.metadata.labels or {}
+            task_spec = labels.get("volcano.sh/task-spec", "")
+            if isinstance(task_spec, str) and "master" in task_spec.lower():
+                return pod
+
+        for pod in pods:
+            name = (pod.metadata.name or "").lower()
+            if "master" in name:
+                return pod
+
+        return pods[0]
 
     async def _check_format_sync(self, request: TaskRequest) -> None:
         params: Dict[str, Any] = request.parameters or {}

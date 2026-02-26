@@ -3,6 +3,7 @@
 import asyncio
 import logging
 import time
+from collections import Counter
 from dataclasses import dataclass
 from typing import Iterable, Optional, Tuple, Any, Mapping
 
@@ -82,6 +83,19 @@ class ExecResult:
 class VolcanoJobRunner:
     """Utility wrapper for creating, monitoring, and cleaning Volcano jobs."""
 
+    _FATAL_CONTAINER_WAITING_REASONS = frozenset(
+        {
+            "CrashLoopBackOff",
+            "CreateContainerConfigError",
+            "CreateContainerError",
+            "ErrImagePull",
+            "ImageInspectError",
+            "ImagePullBackOff",
+            "InvalidImageName",
+            "RunContainerError",
+        }
+    )
+
     def __init__(self, namespace: str):
         self.namespace = namespace
         self.clients = KubernetesClients(namespace)
@@ -134,6 +148,78 @@ class VolcanoJobRunner:
             logger.error(f"Failed to delete VolcanoJob {job_name}: {exc}")
             raise TaskJobError(job_name, f"Failed to delete job: {exc}") from exc
 
+    @staticmethod
+    def infer_expected_pod_count(job_body: Mapping[str, Any], default: int = 1) -> int:
+        """Infer expected pod count from VolcanoJob spec."""
+
+        if default < 1:
+            default = 1
+
+        spec = job_body.get("spec")
+        if not isinstance(spec, Mapping):
+            return default
+
+        min_available = VolcanoJobRunner._to_positive_int(spec.get("minAvailable"))
+        if min_available is not None:
+            return min_available
+
+        tasks = spec.get("tasks")
+        if not isinstance(tasks, list):
+            return default
+
+        replicas_total = 0
+        for task in tasks:
+            if not isinstance(task, Mapping):
+                continue
+
+            replicas = VolcanoJobRunner._to_positive_int(task.get("replicas"))
+            replicas_total += replicas if replicas is not None else 1
+
+        return replicas_total if replicas_total > 0 else default
+
+    async def wait_for_pods_scheduled(
+        self, label_selector: str, expected: int, timeout: int = 120
+    ) -> list[V1Pod]:
+        core_api, _ = self._require_clients()
+
+        def _wait() -> list[V1Pod]:
+            deadline = time.time() + timeout
+            last_seen: list[V1Pod] = []
+            last_summary = "No pods observed yet"
+
+            while time.time() < deadline:
+                pods = core_api.list_namespaced_pod(
+                    namespace=self.namespace,
+                    label_selector=label_selector,
+                ).items
+                last_seen = pods
+                last_summary = self._summarize_pods(pods)
+
+                failed = [p for p in pods if self._pod_phase(p) == "Failed"]
+                if failed:
+                    names = ", ".join(self._pod_name(p) for p in failed)
+                    raise TaskJobError(
+                        label_selector,
+                        f"Pods failed before scheduling: {names}. {last_summary}",
+                    )
+
+                scheduled = [p for p in pods if self._is_pod_scheduled(p)]
+                if len(scheduled) >= expected:
+                    return scheduled
+
+                time.sleep(1)
+
+            names = [self._pod_name(p) for p in last_seen]
+            raise TaskJobError(
+                label_selector,
+                (
+                    "Timed out waiting for pods to be scheduled by Volcano "
+                    f"(expected {expected}). Last seen: {names}. {last_summary}"
+                ),
+            )
+
+        return await asyncio.to_thread(_wait)
+
     async def wait_for_pods_ready(
         self, label_selector: str, expected: int, timeout: int = 120
     ) -> list[V1Pod]:
@@ -142,29 +228,46 @@ class VolcanoJobRunner:
         def _wait() -> list[V1Pod]:
             deadline = time.time() + timeout
             last_seen: list[V1Pod] = []
+            last_summary = "No pods observed yet"
 
             while time.time() < deadline:
                 pods = core_api.list_namespaced_pod(
                     namespace=self.namespace, label_selector=label_selector
                 ).items
                 last_seen = pods
+                last_summary = self._summarize_pods(pods)
 
                 ready = [p for p in pods if self._is_pod_ready(p)]
-                failed = [p for p in pods if p.status.phase == "Failed"]
+                failed = [p for p in pods if self._pod_phase(p) == "Failed"]
 
                 if failed:
-                    names = ", ".join(p.metadata.name for p in failed)
-                    raise TaskJobError(label_selector, f"Pods failed: {names}")
+                    names = ", ".join(self._pod_name(p) for p in failed)
+                    raise TaskJobError(
+                        label_selector, f"Pods failed before ready: {names}. {last_summary}"
+                    )
+
+                fatal_issue = self._find_fatal_runtime_issue(pods)
+                if fatal_issue:
+                    raise TaskJobError(
+                        label_selector,
+                        (
+                            "Pods entered fatal runtime state before readiness: "
+                            f"{fatal_issue}. {last_summary}"
+                        ),
+                    )
 
                 if len(ready) >= expected:
                     return ready
 
                 time.sleep(1)
 
-            names = [p.metadata.name for p in last_seen]
+            names = [self._pod_name(p) for p in last_seen]
             raise TaskJobError(
                 label_selector,
-                f"Timed out waiting for pods (expected {expected}). Last seen: {names}",
+                (
+                    "Timed out waiting for pods to become Ready "
+                    f"(expected {expected}). Last seen: {names}. {last_summary}"
+                ),
             )
 
         return await asyncio.to_thread(_wait)
@@ -373,11 +476,163 @@ class VolcanoJobRunner:
 
     @staticmethod
     def _is_pod_ready(pod: V1Pod) -> bool:
-        if pod.status.phase != "Running":
+        pod_status = pod.status
+        if not pod_status or pod_status.phase != "Running":
             return False
-        if not pod.status.container_statuses:
+        if not pod_status.container_statuses:
             return False
-        return all(cs.ready for cs in pod.status.container_statuses)
+        return all(cs.ready for cs in pod_status.container_statuses)
+
+    @staticmethod
+    def _pod_phase(pod: V1Pod) -> str:
+        if pod.status and pod.status.phase:
+            return pod.status.phase
+        return "Unknown"
+
+    @staticmethod
+    def _pod_name(pod: V1Pod) -> str:
+        if pod.metadata and pod.metadata.name:
+            return pod.metadata.name
+        return "<unknown-pod>"
+
+    @staticmethod
+    def _to_positive_int(value: Any) -> Optional[int]:
+        try:
+            parsed = int(value)
+        except (TypeError, ValueError):
+            return None
+        if parsed < 1:
+            return None
+        return parsed
+
+    @staticmethod
+    def _is_pod_scheduled(pod: V1Pod) -> bool:
+        pod_spec = pod.spec
+        if pod_spec and pod_spec.node_name:
+            return True
+
+        condition = VolcanoJobRunner._get_pod_condition(pod, "PodScheduled")
+        return bool(condition and condition.status == "True")
+
+    @staticmethod
+    def _get_pod_condition(pod: V1Pod, condition_type: str) -> Optional[Any]:
+        pod_status = pod.status
+        if not pod_status:
+            return None
+
+        conditions = pod_status.conditions or []
+        for condition in conditions:
+            if condition.type == condition_type:
+                return condition
+        return None
+
+    @staticmethod
+    def _shorten_message(message: str, limit: int = 140) -> str:
+        compact = " ".join(message.split())
+        if len(compact) <= limit:
+            return compact
+        return f"{compact[: limit - 3]}..."
+
+    @classmethod
+    def _summarize_pods(cls, pods: list[V1Pod]) -> str:
+        if not pods:
+            return "No pods observed yet"
+
+        phases = Counter(cls._pod_phase(pod) for pod in pods)
+        queue_waiting = 0
+        runtime_waiting = 0
+        scheduling_reasons: Counter[str] = Counter()
+        waiting_reasons: Counter[str] = Counter()
+
+        for pod in pods:
+            if not cls._is_pod_scheduled(pod):
+                queue_waiting += 1
+                scheduled_condition = cls._get_pod_condition(pod, "PodScheduled")
+                if scheduled_condition and scheduled_condition.status == "False":
+                    reason = scheduled_condition.reason or "PodScheduled=False"
+                    message = (scheduled_condition.message or "").strip()
+                    if message:
+                        reason = f"{reason}: {cls._shorten_message(message)}"
+                    scheduling_reasons[reason] += 1
+
+            if cls._is_pod_scheduled(pod) and not cls._is_pod_ready(pod):
+                runtime_waiting += 1
+
+            for reason in cls._iter_container_waiting_reasons(pod):
+                waiting_reasons[reason] += 1
+
+        ready_count = sum(1 for pod in pods if cls._is_pod_ready(pod))
+        scheduled_count = sum(1 for pod in pods if cls._is_pod_scheduled(pod))
+
+        return (
+            f"pods={len(pods)}, scheduled={scheduled_count}, ready={ready_count}, "
+            f"queue_waiting={queue_waiting}, runtime_waiting={runtime_waiting}, "
+            f"phases={cls._format_counter(phases)}, "
+            f"scheduling_reasons={cls._format_counter(scheduling_reasons)}, "
+            f"container_waiting={cls._format_counter(waiting_reasons)}"
+        )
+
+    @staticmethod
+    def _iter_all_container_statuses(pod: V1Pod) -> Iterable[Any]:
+        pod_status = pod.status
+        if not pod_status:
+            return ()
+
+        combined: list[Any] = []
+        if pod_status.init_container_statuses:
+            combined.extend(pod_status.init_container_statuses)
+        if pod_status.container_statuses:
+            combined.extend(pod_status.container_statuses)
+        return combined
+
+    @classmethod
+    def _iter_container_waiting_reasons(cls, pod: V1Pod) -> list[str]:
+        reasons: list[str] = []
+        for container_status in cls._iter_all_container_statuses(pod):
+            state = container_status.state
+            if not state or not state.waiting or not state.waiting.reason:
+                continue
+            reasons.append(state.waiting.reason)
+        return reasons
+
+    @classmethod
+    def _find_fatal_runtime_issue(cls, pods: list[V1Pod]) -> Optional[str]:
+        for pod in pods:
+            pod_name = cls._pod_name(pod)
+            for container_status in cls._iter_all_container_statuses(pod):
+                container_name = getattr(container_status, "name", "<unknown>")
+                state = container_status.state
+                if not state:
+                    continue
+
+                waiting_state = state.waiting
+                if waiting_state and waiting_state.reason in cls._FATAL_CONTAINER_WAITING_REASONS:
+                    message = waiting_state.message or ""
+                    message_suffix = (
+                        f": {cls._shorten_message(message)}" if message else ""
+                    )
+                    return (
+                        f"{pod_name}/{container_name} waiting={waiting_state.reason}"
+                        f"{message_suffix}"
+                    )
+
+                terminated_state = state.terminated
+                if terminated_state and terminated_state.exit_code not in (0, None):
+                    reason = terminated_state.reason or "Terminated"
+                    return (
+                        f"{pod_name}/{container_name} terminated={reason}"
+                        f"(exit_code={terminated_state.exit_code})"
+                    )
+
+        return None
+
+    @staticmethod
+    def _format_counter(counter: Counter[str], limit: int = 3) -> str:
+        if not counter:
+            return "-"
+        return ", ".join(
+            f"{label}({count})" for label, count in counter.most_common(limit)
+        )
 
 
 __all__ = [

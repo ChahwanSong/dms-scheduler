@@ -94,7 +94,7 @@ async def test_run_rm_updates_progress_and_saves_log(tmp_path, monkeypatch):
     )
 
     assert job_runner.exec_commands
-    assert "--agreessive" in job_runner.exec_commands[0][2]
+    assert "--aggressive" in job_runner.exec_commands[0][2]
     assert state_store.results
     assert result.launcher_output
     assert (tmp_path / "rm-3.log").exists()
