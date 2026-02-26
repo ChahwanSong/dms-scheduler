@@ -130,6 +130,11 @@ class RmTaskHandler(BaseTaskHandler):
                 verifier_obj,
                 default=1,
             )
+            logger.info(
+                "[Task %s] Expected rm verifier pod count: %d",
+                task_id,
+                verifier_expected,
+            )
             await self.job_runner.wait_for_pods_scheduled(
                 label_selector=verifier_label_selector,
                 expected=verifier_expected,
@@ -211,6 +216,11 @@ class RmTaskHandler(BaseTaskHandler):
             expected_pods = self.job_runner.infer_expected_pod_count(
                 task_obj,
                 default=1 + int(K8S_RM_DEFAULT_N_WORKERS),
+            )
+            logger.info(
+                "[Task %s] Expected rm pod count: %d",
+                task_id,
+                expected_pods,
             )
             await self.job_runner.wait_for_pods_scheduled(
                 label_selector=label_selector,
