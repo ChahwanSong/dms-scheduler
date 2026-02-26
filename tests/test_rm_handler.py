@@ -86,7 +86,7 @@ async def test_run_rm_updates_progress_and_saves_log(tmp_path, monkeypatch):
 
     monkeypatch.setattr("app.services.handlers.rm.K8S_DMS_LOG_DIRECTORY", str(tmp_path))
 
-    result = await handler._run_rm(
+    result = await handler._run_drm(
         task_id="rm-3",
         label_selector="rm-job-id=rm-3",
         pod_name="pod-1",

@@ -545,21 +545,6 @@ class RmTaskHandler(BaseTaskHandler):
             return TaskResult(pod_status="Unknown", launcher_output="")
         return task_result
 
-    async def _run_rm(
-        self,
-        task_id: str,
-        label_selector: str,
-        pod_name: str,
-        target_path: str,
-    ) -> TaskResult:
-        """Backward-compatible alias for the legacy helper name."""
-        return await self._run_drm(
-            task_id=task_id,
-            label_selector=label_selector,
-            pod_name=pod_name,
-            target_path=target_path,
-        )
-
     async def _record_drm_exit_code(self, task_id: str, result: ExecResult) -> None:
         exit_code = result.exit_code
         await self.state_store.append_log(
