@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import threading
 import time
 from collections import Counter
 from dataclasses import dataclass
@@ -96,6 +97,8 @@ class VolcanoJobRunner:
             "RunContainerError",
         }
     )
+    _WAIT_METRICS_LOCK = threading.Lock()
+    _WAIT_METRICS: Counter[str] = Counter()
 
     def __init__(self, namespace: str):
         self.namespace = namespace
@@ -191,6 +194,7 @@ class VolcanoJobRunner:
         last_seen: list[V1Pod] = []
         last_summary = "No pods observed yet"
         previous_summary: Optional[str] = None
+        no_pods_info_logged = False
 
         while time.time() < deadline:
             await self._ensure_wait_continues(
@@ -205,19 +209,20 @@ class VolcanoJobRunner:
                     label_selector=label_selector,
                 ).items
             )
+            last_seen = pods
+            summary = self._summarize_pods(pods)
             await self._ensure_wait_continues(
                 task_id=task_id,
                 label_selector=label_selector,
-                last_summary=last_summary,
+                last_summary=summary,
                 should_continue=should_continue,
             )
-            last_seen = pods
-            summary = self._summarize_pods(pods)
             if summary != previous_summary:
-                logger.info(
-                    "Pod scheduling status changed for %s: %s",
-                    label_selector,
-                    summary,
+                no_pods_info_logged = self._log_wait_status_change(
+                    status_kind="scheduling",
+                    label_selector=label_selector,
+                    summary=summary,
+                    no_pods_info_logged=no_pods_info_logged,
                 )
                 previous_summary = summary
             last_summary = summary
@@ -247,6 +252,7 @@ class VolcanoJobRunner:
             await asyncio.sleep(1)
 
         names = [self._pod_name(p) for p in last_seen]
+        self._record_wait_metric("pods_wait_timeout_total")
         raise TaskJobError(
             task_id,
             (
@@ -269,6 +275,7 @@ class VolcanoJobRunner:
         last_seen: list[V1Pod] = []
         last_summary = "No pods observed yet"
         previous_summary: Optional[str] = None
+        no_pods_info_logged = False
 
         while time.time() < deadline:
             await self._ensure_wait_continues(
@@ -283,19 +290,20 @@ class VolcanoJobRunner:
                     label_selector=label_selector,
                 ).items
             )
+            last_seen = pods
+            summary = self._summarize_pods(pods)
             await self._ensure_wait_continues(
                 task_id=task_id,
                 label_selector=label_selector,
-                last_summary=last_summary,
+                last_summary=summary,
                 should_continue=should_continue,
             )
-            last_seen = pods
-            summary = self._summarize_pods(pods)
             if summary != previous_summary:
-                logger.info(
-                    "Pod readiness status changed for %s: %s",
-                    label_selector,
-                    summary,
+                no_pods_info_logged = self._log_wait_status_change(
+                    status_kind="readiness",
+                    label_selector=label_selector,
+                    summary=summary,
+                    no_pods_info_logged=no_pods_info_logged,
                 )
                 previous_summary = summary
             last_summary = summary
@@ -337,6 +345,7 @@ class VolcanoJobRunner:
             await asyncio.sleep(1)
 
         names = [self._pod_name(p) for p in last_seen]
+        self._record_wait_metric("pods_wait_timeout_total")
         raise TaskJobError(
             task_id,
             (
@@ -361,14 +370,61 @@ class VolcanoJobRunner:
             if isawaitable(callback_result):
                 await callback_result
         except TaskJobError as exc:
+            self._record_wait_metric("pods_wait_aborted_total")
             raise TaskJobError(
                 task_id,
                 (
-                    f"[task_id={task_id}] Wait loop cancelled "
+                    f"[task_id={task_id}] Wait loop aborted due to cancellation "
                     f"(label_selector={label_selector}). Last pod summary: "
                     f"{last_summary}. Cause: {exc}"
                 ),
             ) from exc
+
+    @classmethod
+    def _record_wait_metric(cls, metric_name: str) -> None:
+        with cls._WAIT_METRICS_LOCK:
+            cls._WAIT_METRICS[metric_name] += 1
+
+    @classmethod
+    def get_wait_metrics_snapshot(cls) -> dict[str, int]:
+        with cls._WAIT_METRICS_LOCK:
+            return {
+                "pods_wait_aborted_total": cls._WAIT_METRICS.get("pods_wait_aborted_total", 0),
+                "pods_wait_timeout_total": cls._WAIT_METRICS.get("pods_wait_timeout_total", 0),
+            }
+
+    @staticmethod
+    def _log_wait_status_change(
+        status_kind: str,
+        label_selector: str,
+        summary: str,
+        no_pods_info_logged: bool,
+    ) -> bool:
+        if summary == "No pods observed yet":
+            if no_pods_info_logged:
+                logger.debug(
+                    "Pod %s status unchanged for %s: %s",
+                    status_kind,
+                    label_selector,
+                    summary,
+                )
+                return True
+
+            logger.info(
+                "Pod %s status changed for %s: %s",
+                status_kind,
+                label_selector,
+                summary,
+            )
+            return True
+
+        logger.info(
+            "Pod %s status changed for %s: %s",
+            status_kind,
+            label_selector,
+            summary,
+        )
+        return no_pods_info_logged
 
     async def wait_for_completion(
         self,
