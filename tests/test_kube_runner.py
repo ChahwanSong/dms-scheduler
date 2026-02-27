@@ -99,4 +99,5 @@ async def test_wait_for_pods_ready_cancellation_message_and_metric(monkeypatch):
         )
 
     assert "aborted due to cancellation" in str(excinfo.value)
+    assert "Last pod summary" not in str(excinfo.value)
     assert runner.get_wait_metrics_snapshot()["pods_wait_aborted_total"] == 1
