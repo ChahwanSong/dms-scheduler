@@ -201,9 +201,8 @@ class SyncTaskHandler(BaseTaskHandler):
         queue_name = await self._get_task_queue_name(task_id)
 
         # TODO: operation type 정하기 (dsync, nsync)
-        exists = await self.job_runner.has_node_with_true_labels(
-            [src_info["label"], dst_info["label"]]
-        )
+        required_labels = [src_info["label"], dst_info["label"]]
+        exists = await self.job_runner.has_node_with_true_labels(required_labels)
         logger.info("[Task %s] dsync candidate node exists=%s", task_id, exists)
         
         
@@ -267,6 +266,13 @@ class SyncTaskHandler(BaseTaskHandler):
                     expected=expected_pods,
                     timeout=POD_SCHEDULE_TIMEOUT_SECONDS,
                     should_continue=lambda: self._ensure_task_running(task_id),
+                    schedule_precheck=lambda: self.job_runner.has_node_with_true_labels(
+                        required_labels
+                    ),
+                    schedule_precheck_error=(
+                        "No node has all required labels set to true: "
+                        f"{required_labels}"
+                    ),
                 )
                 sync_pods = await self.job_runner.wait_for_pods_ready(
                     task_id=task_id,
