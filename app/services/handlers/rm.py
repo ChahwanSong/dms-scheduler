@@ -98,6 +98,7 @@ class RmTaskHandler(BaseTaskHandler):
             raise TaskInvalidDirectoryError(
                 task_id, target_path, f"Invalid path to service '{request.service}'"
             )
+        required_labels = [mount_info["label"]]
 
         # ------------------- VERIFICATION -------------------
         await self._ensure_task_running(task_id)
@@ -141,6 +142,13 @@ class RmTaskHandler(BaseTaskHandler):
                 expected=verifier_expected,
                 timeout=POD_SCHEDULE_TIMEOUT_SECONDS,
                 should_continue=lambda: self._ensure_task_running(task_id),
+                schedule_precheck=lambda: self.job_runner.has_node_with_true_labels(
+                    required_labels
+                ),
+                schedule_precheck_error=(
+                    "No node has all required labels set to true: "
+                    f"{required_labels}"
+                ),
             )
             verifier_pods = await self.job_runner.wait_for_pods_ready(
                 task_id=task_id,
@@ -232,6 +240,13 @@ class RmTaskHandler(BaseTaskHandler):
                 expected=expected_pods,
                 timeout=POD_SCHEDULE_TIMEOUT_SECONDS,
                 should_continue=lambda: self._ensure_task_running(task_id),
+                schedule_precheck=lambda: self.job_runner.has_node_with_true_labels(
+                    required_labels
+                ),
+                schedule_precheck_error=(
+                    "No node has all required labels set to true: "
+                    f"{required_labels}"
+                ),
             )
             rm_pods = await self.job_runner.wait_for_pods_ready(
                 task_id=task_id,
