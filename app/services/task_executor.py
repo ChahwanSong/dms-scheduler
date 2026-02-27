@@ -109,11 +109,11 @@ class TaskExecutor:
             TaskTemplateRenderError,
             TaskJobError,
         ) as exc:
-            logger.error(f"Task {task_id} failed: {exc}")
             state = await self.state_store.get_task(task_id)
             if state and state.status in (TaskStatus.cancel_requested, TaskStatus.cancelled):
-                pass
+                logger.info("Task %s stopped due to cancellation: %s", task_id, exc)
             else:
+                logger.error(f"Task {task_id} failed: {exc}")
                 await self._transition(task_id, TaskStatus.failed, str(exc))
         except Exception as exc:  # pragma: no cover - defensive
             logger.exception(f"Task {task_id} failed unexpectedly")

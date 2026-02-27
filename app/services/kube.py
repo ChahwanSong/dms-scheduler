@@ -375,8 +375,7 @@ class VolcanoJobRunner:
                 task_id,
                 (
                     f"[task_id={task_id}] Wait loop aborted due to cancellation "
-                    f"(label_selector={label_selector}). Last pod summary: "
-                    f"{last_summary}. Cause: {exc}"
+                    f"(label_selector={label_selector}). Cause: {exc}"
                 ),
             ) from exc
 
