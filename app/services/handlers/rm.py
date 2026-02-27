@@ -136,14 +136,18 @@ class RmTaskHandler(BaseTaskHandler):
                 verifier_expected,
             )
             await self.job_runner.wait_for_pods_scheduled(
+                task_id=task_id,
                 label_selector=verifier_label_selector,
                 expected=verifier_expected,
                 timeout=POD_SCHEDULE_TIMEOUT_SECONDS,
+                should_continue=lambda: self._ensure_task_running(task_id),
             )
             verifier_pods = await self.job_runner.wait_for_pods_ready(
+                task_id=task_id,
                 label_selector=verifier_label_selector,
                 expected=verifier_expected,
                 timeout=POD_READY_TIMEOUT_SECONDS,
+                should_continue=lambda: self._ensure_task_running(task_id),
             )
 
             await self._verify_mount(task_id, verifier_pods, mount_path)
@@ -223,14 +227,18 @@ class RmTaskHandler(BaseTaskHandler):
                 expected_pods,
             )
             await self.job_runner.wait_for_pods_scheduled(
+                task_id=task_id,
                 label_selector=label_selector,
                 expected=expected_pods,
                 timeout=POD_SCHEDULE_TIMEOUT_SECONDS,
+                should_continue=lambda: self._ensure_task_running(task_id),
             )
             rm_pods = await self.job_runner.wait_for_pods_ready(
+                task_id=task_id,
                 label_selector=label_selector,
                 expected=expected_pods,
                 timeout=POD_READY_TIMEOUT_SECONDS,
+                should_continue=lambda: self._ensure_task_running(task_id),
             )
             pod_name = self._pick_master_pod(task_id, rm_pods).metadata.name
 
