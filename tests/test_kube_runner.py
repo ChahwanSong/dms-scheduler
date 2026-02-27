@@ -55,12 +55,14 @@ def test_log_wait_status_change_no_pods_logs_info_once_then_debug(caplog):
 
     no_pods_info_logged = VolcanoJobRunner._log_wait_status_change(
         status_kind="scheduling",
+        task_id="430",
         label_selector="job=a",
         summary="No pods observed yet",
         no_pods_info_logged=False,
     )
     no_pods_info_logged = VolcanoJobRunner._log_wait_status_change(
         status_kind="scheduling",
+        task_id="430",
         label_selector="job=a",
         summary="No pods observed yet",
         no_pods_info_logged=no_pods_info_logged,
@@ -68,6 +70,7 @@ def test_log_wait_status_change_no_pods_logs_info_once_then_debug(caplog):
 
     assert no_pods_info_logged is True
     assert "No pods observed yet" in caplog.text
+    assert "[Task 430]" in caplog.text
     info_logs = [r for r in caplog.records if r.levelname == "INFO"]
     debug_logs = [r for r in caplog.records if r.levelname == "DEBUG"]
     assert len(info_logs) == 1

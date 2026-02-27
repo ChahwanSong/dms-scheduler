@@ -128,7 +128,7 @@ class SyncTaskHandler(BaseTaskHandler):
 
         try:
             await self._ensure_task_running(task_id)
-            await self.job_runner.create_job(verifier_obj)
+            await self.job_runner.create_job(verifier_obj, task_id=task_id)
 
             await self._ensure_task_running(task_id)
             verifier_label_selector = f"{K8S_SYNC_VERIFIER_JOB_LABEL}={task_id}"
@@ -251,7 +251,7 @@ class SyncTaskHandler(BaseTaskHandler):
 
             try:
                 await self._ensure_task_running(task_id)
-                await self.job_runner.create_job(task_obj)
+                await self.job_runner.create_job(task_obj, task_id=task_id)
 
                 await self._ensure_task_running(task_id)
                 label_selector = f"{K8S_SYNC_JOB_LABEL}={task_id}"
@@ -914,7 +914,7 @@ class SyncTaskHandler(BaseTaskHandler):
 
         await self._remove_active_job(task_id, job_name, message)
         try:
-            await self.job_runner.delete_job(job_name)
+            await self.job_runner.delete_job(job_name, task_id=task_id)
         except TaskJobError:
             await self._add_active_job(
                 task_id, job_name, f"Re-added {job_name} after failed cleanup attempt"
