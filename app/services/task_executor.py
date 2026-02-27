@@ -24,6 +24,8 @@ from .state_store import StateStore
 
 logger = logging.getLogger(__name__)
 
+_CANCEL_PROPAGATION_TIMEOUT_SECONDS = 2.0
+
 
 class TaskExecutor:
     def __init__(self, state_store: StateStore):
@@ -138,6 +140,16 @@ class TaskExecutor:
         running_task = self._running_tasks.get(request.task_id)
         if running_task and not running_task.done():
             running_task.cancel()
+            logger.info("task_id=%s cancel signal delivered", request.task_id)
+            try:
+                await asyncio.wait_for(running_task, timeout=_CANCEL_PROPAGATION_TIMEOUT_SECONDS)
+            except asyncio.CancelledError:
+                logger.info("task_id=%s cancel signal delivered and acknowledged", request.task_id)
+            except asyncio.TimeoutError:
+                logger.warning("task_id=%s propagation timeout during cancel wait", request.task_id)
+            finally:
+                if running_task.done() and self._running_tasks.get(request.task_id) is running_task:
+                    self._running_tasks.pop(request.task_id, None)
 
         await handler.cancel(request, updated)
         return await self.state_store.get_task(request.task_id)
