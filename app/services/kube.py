@@ -109,7 +109,7 @@ class VolcanoJobRunner:
         assert self.clients.core_api and self.clients.custom_api
         return self.clients.core_api, self.clients.custom_api
 
-    async def create_job(self, body: dict) -> None:
+    async def create_job(self, body: dict, task_id: Optional[str] = None) -> None:
         core_api, custom_api = self._require_clients()
         job_name = body.get("metadata", {}).get("name", "<unknown>")
 
@@ -124,12 +124,23 @@ class VolcanoJobRunner:
 
         try:
             await asyncio.to_thread(_create)
-            logger.info(f"Created VolcanoJob {job_name}")
+            if task_id is not None:
+                logger.info("[Task %s] Created VolcanoJob %s", task_id, job_name)
+            else:
+                logger.info("Created VolcanoJob %s", job_name)
         except ApiException as exc:  # pragma: no cover - network side effects
-            logger.error(f"Failed to create VolcanoJob {job_name}: {exc}")
+            if task_id is not None:
+                logger.error(
+                    "[Task %s] Failed to create VolcanoJob %s: %s",
+                    task_id,
+                    job_name,
+                    exc,
+                )
+            else:
+                logger.error("Failed to create VolcanoJob %s: %s", job_name, exc)
             raise TaskJobError(job_name, f"Failed to create Volcano job: {exc}") from exc
 
-    async def delete_job(self, job_name: str) -> None:
+    async def delete_job(self, job_name: str, task_id: Optional[str] = None) -> None:
         _, custom_api = self._require_clients()
 
         def _delete():
@@ -144,12 +155,30 @@ class VolcanoJobRunner:
 
         try:
             await asyncio.to_thread(_delete)
-            logger.info(f"Deleted VolcanoJob {job_name}")
+            if task_id is not None:
+                logger.info("[Task %s] Deleted VolcanoJob %s", task_id, job_name)
+            else:
+                logger.info("Deleted VolcanoJob %s", job_name)
         except ApiException as exc:  # pragma: no cover - network side effects
             if exc.status == 404:
-                logger.warning(f"VolcanoJob {job_name} already removed")
+                if task_id is not None:
+                    logger.warning(
+                        "[Task %s] VolcanoJob %s already removed",
+                        task_id,
+                        job_name,
+                    )
+                else:
+                    logger.warning("VolcanoJob %s already removed", job_name)
                 return
-            logger.error(f"Failed to delete VolcanoJob {job_name}: {exc}")
+            if task_id is not None:
+                logger.error(
+                    "[Task %s] Failed to delete VolcanoJob %s: %s",
+                    task_id,
+                    job_name,
+                    exc,
+                )
+            else:
+                logger.error("Failed to delete VolcanoJob %s: %s", job_name, exc)
             raise TaskJobError(job_name, f"Failed to delete job: {exc}") from exc
 
     @staticmethod
@@ -220,6 +249,7 @@ class VolcanoJobRunner:
             if summary != previous_summary:
                 no_pods_info_logged = self._log_wait_status_change(
                     status_kind="scheduling",
+                    task_id=task_id,
                     label_selector=label_selector,
                     summary=summary,
                     no_pods_info_logged=no_pods_info_logged,
@@ -301,6 +331,7 @@ class VolcanoJobRunner:
             if summary != previous_summary:
                 no_pods_info_logged = self._log_wait_status_change(
                     status_kind="readiness",
+                    task_id=task_id,
                     label_selector=label_selector,
                     summary=summary,
                     no_pods_info_logged=no_pods_info_logged,
@@ -395,6 +426,7 @@ class VolcanoJobRunner:
     @staticmethod
     def _log_wait_status_change(
         status_kind: str,
+        task_id: str,
         label_selector: str,
         summary: str,
         no_pods_info_logged: bool,
@@ -402,7 +434,8 @@ class VolcanoJobRunner:
         if summary == "No pods observed yet":
             if no_pods_info_logged:
                 logger.debug(
-                    "Pod %s status unchanged for %s: %s",
+                    "[Task %s] Pod %s status unchanged for %s: %s",
+                    task_id,
                     status_kind,
                     label_selector,
                     summary,
@@ -410,7 +443,8 @@ class VolcanoJobRunner:
                 return True
 
             logger.info(
-                "Pod %s status changed for %s: %s",
+                "[Task %s] Pod %s status changed for %s: %s",
+                task_id,
                 status_kind,
                 label_selector,
                 summary,
@@ -418,7 +452,8 @@ class VolcanoJobRunner:
             return True
 
         logger.info(
-            "Pod %s status changed for %s: %s",
+            "[Task %s] Pod %s status changed for %s: %s",
+            task_id,
             status_kind,
             label_selector,
             summary,
