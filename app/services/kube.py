@@ -443,7 +443,7 @@ class VolcanoJobRunner:
         raise TaskJobError(
             task_id,
             (
-                f"[task_id={task_id}] Scheduling precheck failed "
+                f"[task_id {task_id}] Scheduling precheck failed "
                 f"(label_selector={label_selector}): {reason}"
             ),
         )
