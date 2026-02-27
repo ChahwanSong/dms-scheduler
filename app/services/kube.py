@@ -217,6 +217,8 @@ class VolcanoJobRunner:
         expected: int,
         timeout: int = 120,
         should_continue: Optional[Callable[[], Awaitable[None] | None]] = None,
+        schedule_precheck: Optional[Callable[[], Awaitable[bool] | bool]] = None,
+        schedule_precheck_error: Optional[str] = None,
     ) -> list[V1Pod]:
         core_api, _ = self._require_clients()
         deadline = time.time() + timeout
@@ -231,6 +233,12 @@ class VolcanoJobRunner:
                 label_selector=label_selector,
                 last_summary=last_summary,
                 should_continue=should_continue,
+            )
+            await self._ensure_schedule_precheck(
+                task_id=task_id,
+                label_selector=label_selector,
+                schedule_precheck=schedule_precheck,
+                schedule_precheck_error=schedule_precheck_error,
             )
             pods = await asyncio.to_thread(
                 lambda: core_api.list_namespaced_pod(
@@ -409,6 +417,32 @@ class VolcanoJobRunner:
                     f"(label_selector={label_selector}). Cause: {exc}"
                 ),
             ) from exc
+
+    async def _ensure_schedule_precheck(
+        self,
+        task_id: str,
+        label_selector: str,
+        schedule_precheck: Optional[Callable[[], Awaitable[bool] | bool]],
+        schedule_precheck_error: Optional[str],
+    ) -> None:
+        if schedule_precheck is None:
+            return
+
+        precheck_result = schedule_precheck()
+        if isawaitable(precheck_result):
+            precheck_result = await precheck_result
+
+        if precheck_result:
+            return
+
+        reason = schedule_precheck_error or "No schedulable node satisfies required label constraints"
+        raise TaskJobError(
+            task_id,
+            (
+                f"[task_id={task_id}] Scheduling precheck failed "
+                f"(label_selector={label_selector}): {reason}"
+            ),
+        )
 
     @classmethod
     def _record_wait_metric(cls, metric_name: str) -> None:

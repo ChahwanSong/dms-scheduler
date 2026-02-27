@@ -127,3 +127,64 @@ async def test_has_node_with_true_labels_returns_false_for_empty_input():
     runner = VolcanoJobRunner(namespace="default")
 
     assert await runner.has_node_with_true_labels([]) is False
+
+
+@pytest.mark.anyio
+async def test_wait_for_pods_scheduled_fails_when_schedule_precheck_is_false(monkeypatch):
+    runner = VolcanoJobRunner(namespace="default")
+
+    class _Core:
+        def list_namespaced_pod(self, namespace, label_selector):
+            raise AssertionError("pod listing should not run when precheck fails")
+
+    monkeypatch.setattr(runner, "_require_clients", lambda: (_Core(), object()))
+
+    async def _always_false(label_keys):
+        assert list(label_keys) == ["src", "dst"]
+        return False
+
+    monkeypatch.setattr(runner, "has_node_with_true_labels", _always_false)
+
+    with pytest.raises(TaskJobError) as excinfo:
+        await runner.wait_for_pods_scheduled(
+            task_id="t1",
+            label_selector="job=a",
+            expected=1,
+            timeout=5,
+            schedule_precheck=lambda: runner.has_node_with_true_labels(["src", "dst"]),
+            schedule_precheck_error="No node has all required labels set to true: ['src', 'dst']",
+        )
+
+    assert "Scheduling precheck failed" in str(excinfo.value)
+    assert "No node has all required labels set to true" in str(excinfo.value)
+
+
+@pytest.mark.anyio
+async def test_wait_for_pods_scheduled_accepts_lambda_with_inputs(monkeypatch):
+    runner = VolcanoJobRunner(namespace="default")
+
+    required_labels = ["src", "dst"]
+
+    async def _has_labels(label_keys):
+        return list(label_keys) == required_labels
+
+    monkeypatch.setattr(runner, "has_node_with_true_labels", _has_labels)
+
+    scheduled_pod = V1Pod(metadata=V1ObjectMeta(name="p-1"))
+    scheduled_pod.spec = type("_Spec", (), {"node_name": "n-1"})()
+
+    class _Core:
+        def list_namespaced_pod(self, namespace, label_selector):
+            return type("_Result", (), {"items": [scheduled_pod]})
+
+    monkeypatch.setattr(runner, "_require_clients", lambda: (_Core(), object()))
+
+    pods = await runner.wait_for_pods_scheduled(
+        task_id="t1",
+        label_selector="job=a",
+        expected=1,
+        timeout=5,
+        schedule_precheck=lambda: runner.has_node_with_true_labels(required_labels),
+    )
+
+    assert [p.metadata.name for p in pods] == ["p-1"]
