@@ -662,6 +662,18 @@ class VolcanoJobRunner:
             for node, labels in full.items()
         }
 
+    async def has_node_with_true_labels(self, label_keys: Iterable[str]) -> bool:
+        """Return True if any node contains every given label with value ``true``."""
+        normalized_label_keys = tuple(dict.fromkeys(k for k in label_keys if k))
+        if not normalized_label_keys:
+            return False
+
+        node_labels = await self.get_node_label_map_filtered(normalized_label_keys)
+        return any(
+            all(labels.get(label_key) == "true" for label_key in normalized_label_keys)
+            for labels in node_labels.values()
+        )
+
     @staticmethod
     def _is_pod_ready(pod: V1Pod) -> bool:
         pod_status = pod.status

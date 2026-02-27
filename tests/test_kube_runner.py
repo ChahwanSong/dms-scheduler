@@ -104,3 +104,26 @@ async def test_wait_for_pods_ready_cancellation_message_and_metric(monkeypatch):
     assert "aborted due to cancellation" in str(excinfo.value)
     assert "Last pod summary" not in str(excinfo.value)
     assert runner.get_wait_metrics_snapshot()["pods_wait_aborted_total"] == 1
+
+
+@pytest.mark.anyio
+async def test_has_node_with_true_labels_returns_true_when_single_node_matches(monkeypatch):
+    runner = VolcanoJobRunner(namespace="default")
+
+    async def _filtered(label_keys):
+        assert tuple(label_keys) == ("src", "dst")
+        return {
+            "node-a": {"src": "true", "dst": "false"},
+            "node-b": {"src": "true", "dst": "true"},
+        }
+
+    monkeypatch.setattr(runner, "get_node_label_map_filtered", _filtered)
+
+    assert await runner.has_node_with_true_labels(["src", "dst"]) is True
+
+
+@pytest.mark.anyio
+async def test_has_node_with_true_labels_returns_false_for_empty_input():
+    runner = VolcanoJobRunner(namespace="default")
+
+    assert await runner.has_node_with_true_labels([]) is False
