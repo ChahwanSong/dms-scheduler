@@ -201,13 +201,10 @@ class SyncTaskHandler(BaseTaskHandler):
         queue_name = await self._get_task_queue_name(task_id)
 
         # TODO: operation type 정하기 (dsync, nsync)
-        node_labels = await self.job_runner.get_node_label_map_filtered([src_info["label"],  dst_info["label"]])        
-        
-        exists = any(
-            labels.get(src_info["label"]) == "true" and labels.get(dst_info["label"]) == "true"
-            for labels in node_labels.values()
+        exists = await self.job_runner.has_node_with_true_labels(
+            [src_info["label"], dst_info["label"]]
         )
-        print(f"DSYNC? {exists}")
+        logger.info("[Task %s] dsync candidate node exists=%s", task_id, exists)
         
         
         op_type = "dsync"
