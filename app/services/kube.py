@@ -5,7 +5,8 @@ import logging
 import time
 from collections import Counter
 from dataclasses import dataclass
-from typing import Iterable, Optional, Tuple, Any, Mapping
+from inspect import isawaitable
+from typing import Awaitable, Callable, Iterable, Optional, Tuple, Any, Mapping
 
 from kubernetes import client, config
 from kubernetes.client import ApiException, V1DeleteOptions, V1Pod
@@ -178,7 +179,12 @@ class VolcanoJobRunner:
         return replicas_total if replicas_total > 0 else default
 
     async def wait_for_pods_scheduled(
-        self, label_selector: str, expected: int, timeout: int = 120
+        self,
+        task_id: str,
+        label_selector: str,
+        expected: int,
+        timeout: int = 120,
+        should_continue: Optional[Callable[[], Awaitable[None] | None]] = None,
     ) -> list[V1Pod]:
         core_api, _ = self._require_clients()
         deadline = time.time() + timeout
@@ -187,11 +193,23 @@ class VolcanoJobRunner:
         previous_summary: Optional[str] = None
 
         while time.time() < deadline:
+            await self._ensure_wait_continues(
+                task_id=task_id,
+                label_selector=label_selector,
+                last_summary=last_summary,
+                should_continue=should_continue,
+            )
             pods = await asyncio.to_thread(
                 lambda: core_api.list_namespaced_pod(
                     namespace=self.namespace,
                     label_selector=label_selector,
                 ).items
+            )
+            await self._ensure_wait_continues(
+                task_id=task_id,
+                label_selector=label_selector,
+                last_summary=last_summary,
+                should_continue=should_continue,
             )
             last_seen = pods
             summary = self._summarize_pods(pods)
@@ -208,27 +226,43 @@ class VolcanoJobRunner:
             if failed:
                 names = ", ".join(self._pod_name(p) for p in failed)
                 raise TaskJobError(
-                    label_selector,
-                    f"Pods failed before scheduling: {names}. {last_summary}",
+                    task_id,
+                    (
+                        f"[task_id={task_id}] Pods failed before scheduling "
+                        f"(label_selector={label_selector}): {names}. "
+                        f"Last pod summary: {last_summary}"
+                    ),
                 )
 
             scheduled = [p for p in pods if self._is_pod_scheduled(p)]
             if len(scheduled) >= expected:
                 return scheduled
 
+            await self._ensure_wait_continues(
+                task_id=task_id,
+                label_selector=label_selector,
+                last_summary=last_summary,
+                should_continue=should_continue,
+            )
             await asyncio.sleep(1)
 
         names = [self._pod_name(p) for p in last_seen]
         raise TaskJobError(
-            label_selector,
+            task_id,
             (
-                "Timed out waiting for pods to be scheduled by Volcano "
-                f"(expected {expected}). Last seen: {names}. {last_summary}"
+                f"[task_id={task_id}] Timed out waiting for pods to be scheduled by "
+                f"Volcano (label_selector={label_selector}, expected={expected}). "
+                f"Last seen: {names}. Last pod summary: {last_summary}"
             ),
         )
 
     async def wait_for_pods_ready(
-        self, label_selector: str, expected: int, timeout: int = 120
+        self,
+        task_id: str,
+        label_selector: str,
+        expected: int,
+        timeout: int = 120,
+        should_continue: Optional[Callable[[], Awaitable[None] | None]] = None,
     ) -> list[V1Pod]:
         core_api, _ = self._require_clients()
         deadline = time.time() + timeout
@@ -237,11 +271,23 @@ class VolcanoJobRunner:
         previous_summary: Optional[str] = None
 
         while time.time() < deadline:
+            await self._ensure_wait_continues(
+                task_id=task_id,
+                label_selector=label_selector,
+                last_summary=last_summary,
+                should_continue=should_continue,
+            )
             pods = await asyncio.to_thread(
                 lambda: core_api.list_namespaced_pod(
                     namespace=self.namespace,
                     label_selector=label_selector,
                 ).items
+            )
+            await self._ensure_wait_continues(
+                task_id=task_id,
+                label_selector=label_selector,
+                last_summary=last_summary,
+                should_continue=should_continue,
             )
             last_seen = pods
             summary = self._summarize_pods(pods)
@@ -260,32 +306,69 @@ class VolcanoJobRunner:
             if failed:
                 names = ", ".join(self._pod_name(p) for p in failed)
                 raise TaskJobError(
-                    label_selector, f"Pods failed before ready: {names}. {last_summary}"
+                    task_id,
+                    (
+                        f"[task_id={task_id}] Pods failed before ready "
+                        f"(label_selector={label_selector}): {names}. "
+                        f"Last pod summary: {last_summary}"
+                    ),
                 )
 
             fatal_issue = self._find_fatal_runtime_issue(pods)
             if fatal_issue:
                 raise TaskJobError(
-                    label_selector,
+                    task_id,
                     (
-                        "Pods entered fatal runtime state before readiness: "
-                        f"{fatal_issue}. {last_summary}"
+                        f"[task_id={task_id}] Pods entered fatal runtime state before "
+                        f"readiness (label_selector={label_selector}): {fatal_issue}. "
+                        f"Last pod summary: {last_summary}"
                     ),
                 )
 
             if len(ready) >= expected:
                 return ready
 
+            await self._ensure_wait_continues(
+                task_id=task_id,
+                label_selector=label_selector,
+                last_summary=last_summary,
+                should_continue=should_continue,
+            )
             await asyncio.sleep(1)
 
         names = [self._pod_name(p) for p in last_seen]
         raise TaskJobError(
-            label_selector,
+            task_id,
             (
-                "Timed out waiting for pods to become Ready "
-                f"(expected {expected}). Last seen: {names}. {last_summary}"
+                f"[task_id={task_id}] Timed out waiting for pods to become Ready "
+                f"(label_selector={label_selector}, expected={expected}). "
+                f"Last seen: {names}. Last pod summary: {last_summary}"
             ),
         )
+
+    async def _ensure_wait_continues(
+        self,
+        task_id: str,
+        label_selector: str,
+        last_summary: str,
+        should_continue: Optional[Callable[[], Awaitable[None] | None]],
+    ) -> None:
+        if should_continue is None:
+            return
+
+        try:
+            callback_result = should_continue()
+            if isawaitable(callback_result):
+                await callback_result
+        except TaskJobError as exc:
+            raise TaskJobError(
+                task_id,
+                (
+                    f"[task_id={task_id}] Wait loop cancelled "
+                    f"(label_selector={label_selector}). Last pod summary: "
+                    f"{last_summary}. Cause: {exc}"
+                ),
+            ) from exc
 
     async def wait_for_completion(
         self,
