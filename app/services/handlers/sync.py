@@ -101,6 +101,7 @@ class SyncTaskHandler(BaseTaskHandler):
             raise TaskInvalidDirectoryError(
                 task_id, dst, f"Invalid path to service '{request.service}'"
             )
+        required_labels = list(dict.fromkeys([src_info["label"], dst_info["label"]]))
 
         # ------------------- VERIFICATION -------------------
         await self._ensure_task_running(task_id)
@@ -147,6 +148,13 @@ class SyncTaskHandler(BaseTaskHandler):
                 expected=verifier_expected,
                 timeout=POD_SCHEDULE_TIMEOUT_SECONDS,
                 should_continue=lambda: self._ensure_task_running(task_id),
+                schedule_precheck=lambda: self.job_runner.has_nodes_covering_true_labels(
+                    required_labels
+                ),
+                schedule_precheck_error=(
+                    "No nodes collectively satisfy required labels with true values: "
+                    f"{required_labels}"
+                ),
             )
             verifier_pods = await self.job_runner.wait_for_pods_ready(
                 task_id=task_id,
@@ -201,7 +209,6 @@ class SyncTaskHandler(BaseTaskHandler):
         queue_name = await self._get_task_queue_name(task_id)
 
         # TODO: operation type 정하기 (dsync, nsync)
-        required_labels = [src_info["label"], dst_info["label"]]
         exists = await self.job_runner.has_node_with_true_labels(required_labels)
         logger.info("[Task %s] dsync candidate node exists=%s", task_id, exists)
         

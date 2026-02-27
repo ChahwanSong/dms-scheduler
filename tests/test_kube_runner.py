@@ -129,6 +129,42 @@ async def test_has_node_with_true_labels_returns_false_for_empty_input():
     assert await runner.has_node_with_true_labels([]) is False
 
 
+
+
+@pytest.mark.anyio
+async def test_has_nodes_covering_true_labels_allows_different_nodes(monkeypatch):
+    runner = VolcanoJobRunner(namespace="default")
+
+    async def _filtered(label_keys):
+        assert tuple(label_keys) == ("src", "dst")
+        return {
+            "node-a": {"src": "true", "dst": "false"},
+            "node-b": {"src": "false", "dst": "true"},
+        }
+
+    monkeypatch.setattr(runner, "get_node_label_map_filtered", _filtered)
+
+    assert await runner.has_nodes_covering_true_labels(["src", "dst"]) is True
+
+
+@pytest.mark.anyio
+async def test_has_nodes_covering_true_labels_returns_false_for_empty_input():
+    runner = VolcanoJobRunner(namespace="default")
+
+    assert await runner.has_nodes_covering_true_labels([]) is False
+
+
+@pytest.mark.anyio
+async def test_has_nodes_covering_true_labels_returns_false_when_missing_label(monkeypatch):
+    runner = VolcanoJobRunner(namespace="default")
+
+    async def _filtered(label_keys):
+        return {"node-a": {"src": "true", "dst": "false"}}
+
+    monkeypatch.setattr(runner, "get_node_label_map_filtered", _filtered)
+
+    assert await runner.has_nodes_covering_true_labels(["src", "dst"]) is False
+
 @pytest.mark.anyio
 async def test_wait_for_pods_scheduled_fails_when_schedule_precheck_is_false(monkeypatch):
     runner = VolcanoJobRunner(namespace="default")
@@ -188,3 +224,59 @@ async def test_wait_for_pods_scheduled_accepts_lambda_with_inputs(monkeypatch):
     )
 
     assert [p.metadata.name for p in pods] == ["p-1"]
+
+
+@pytest.mark.anyio
+async def test_wait_for_pods_scheduled_uses_configured_poll_interval(monkeypatch):
+    runner = VolcanoJobRunner(namespace="default")
+
+    class _Core:
+        def list_namespaced_pod(self, namespace, label_selector):
+            return type("_Result", (), {"items": []})
+
+    monkeypatch.setattr(runner, "_require_clients", lambda: (_Core(), object()))
+
+    class _StopLoop(RuntimeError):
+        pass
+
+    async def _sleep(seconds):
+        assert seconds == 10
+        raise _StopLoop()
+
+    monkeypatch.setattr("app.services.kube.asyncio.sleep", _sleep)
+
+    with pytest.raises(_StopLoop):
+        await runner.wait_for_pods_scheduled(
+            task_id="t1",
+            label_selector="job=a",
+            expected=1,
+            timeout=60,
+        )
+
+
+@pytest.mark.anyio
+async def test_wait_for_pods_ready_uses_configured_poll_interval(monkeypatch):
+    runner = VolcanoJobRunner(namespace="default")
+
+    class _Core:
+        def list_namespaced_pod(self, namespace, label_selector):
+            return type("_Result", (), {"items": []})
+
+    monkeypatch.setattr(runner, "_require_clients", lambda: (_Core(), object()))
+
+    class _StopLoop(RuntimeError):
+        pass
+
+    async def _sleep(seconds):
+        assert seconds == 1
+        raise _StopLoop()
+
+    monkeypatch.setattr("app.services.kube.asyncio.sleep", _sleep)
+
+    with pytest.raises(_StopLoop):
+        await runner.wait_for_pods_ready(
+            task_id="t1",
+            label_selector="job=a",
+            expected=1,
+            timeout=60,
+        )

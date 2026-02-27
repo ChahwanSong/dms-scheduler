@@ -14,6 +14,10 @@ from kubernetes.client import ApiException, V1DeleteOptions, V1Pod
 from kubernetes.config import ConfigException
 from kubernetes.stream import stream
 
+from .constants import (
+    POD_READY_POLL_INTERVAL_SECONDS,
+    POD_SCHEDULE_POLL_INTERVAL_SECONDS,
+)
 from .errors import TaskJobError
 
 logger = logging.getLogger(__name__)
@@ -287,7 +291,7 @@ class VolcanoJobRunner:
                 last_summary=last_summary,
                 should_continue=should_continue,
             )
-            await asyncio.sleep(1)
+            await asyncio.sleep(POD_SCHEDULE_POLL_INTERVAL_SECONDS)
 
         names = [self._pod_name(p) for p in last_seen]
         self._record_wait_metric("pods_wait_timeout_total")
@@ -381,7 +385,7 @@ class VolcanoJobRunner:
                 last_summary=last_summary,
                 should_continue=should_continue,
             )
-            await asyncio.sleep(1)
+            await asyncio.sleep(POD_READY_POLL_INTERVAL_SECONDS)
 
         names = [self._pod_name(p) for p in last_seen]
         self._record_wait_metric("pods_wait_timeout_total")
@@ -707,6 +711,24 @@ class VolcanoJobRunner:
             all(labels.get(label_key) == "true" for label_key in normalized_label_keys)
             for labels in node_labels.values()
         )
+
+    async def has_nodes_covering_true_labels(self, label_keys: Iterable[str]) -> bool:
+        """Return True if each given label is ``true`` on at least one node."""
+        normalized_label_keys = tuple(dict.fromkeys(k for k in label_keys if k))
+        if not normalized_label_keys:
+            return False
+
+        node_labels = await self.get_node_label_map_filtered(normalized_label_keys)
+        if not node_labels:
+            return False
+
+        covered = {
+            label_key
+            for labels in node_labels.values()
+            for label_key in normalized_label_keys
+            if labels.get(label_key) == "true"
+        }
+        return all(label_key in covered for label_key in normalized_label_keys)
 
     @staticmethod
     def _is_pod_ready(pod: V1Pod) -> bool:
