@@ -1,5 +1,7 @@
+import pytest
 from kubernetes.client import V1ObjectMeta, V1Pod
 
+from app.services.errors import TaskJobError
 from app.services.handlers.sync import SyncTaskHandler
 from app.services.kube import VolcanoJobRunner
 
@@ -46,3 +48,55 @@ def test_pick_master_pod_prefers_task_spec_label_then_name():
 
     selected = SyncTaskHandler._pick_master_pod("t-sync", pods)
     assert selected.metadata.name == "sync-main-0"
+
+
+def test_log_wait_status_change_no_pods_logs_info_once_then_debug(caplog):
+    caplog.set_level("DEBUG")
+
+    no_pods_info_logged = VolcanoJobRunner._log_wait_status_change(
+        status_kind="scheduling",
+        label_selector="job=a",
+        summary="No pods observed yet",
+        no_pods_info_logged=False,
+    )
+    no_pods_info_logged = VolcanoJobRunner._log_wait_status_change(
+        status_kind="scheduling",
+        label_selector="job=a",
+        summary="No pods observed yet",
+        no_pods_info_logged=no_pods_info_logged,
+    )
+
+    assert no_pods_info_logged is True
+    assert "No pods observed yet" in caplog.text
+    info_logs = [r for r in caplog.records if r.levelname == "INFO"]
+    debug_logs = [r for r in caplog.records if r.levelname == "DEBUG"]
+    assert len(info_logs) == 1
+    assert len(debug_logs) == 1
+
+
+@pytest.mark.anyio
+async def test_wait_for_pods_ready_cancellation_message_and_metric(monkeypatch):
+    runner = VolcanoJobRunner(namespace="default")
+    with runner._WAIT_METRICS_LOCK:
+        runner._WAIT_METRICS.clear()
+
+    class _Core:
+        def list_namespaced_pod(self, namespace, label_selector):
+            return type("_Result", (), {"items": []})
+
+    monkeypatch.setattr(runner, "_require_clients", lambda: (_Core(), object()))
+
+    async def _cancel():
+        raise TaskJobError("t1", "cancel")
+
+    with pytest.raises(TaskJobError) as excinfo:
+        await runner.wait_for_pods_ready(
+            task_id="t1",
+            label_selector="job=a",
+            expected=1,
+            timeout=1,
+            should_continue=_cancel,
+        )
+
+    assert "aborted due to cancellation" in str(excinfo.value)
+    assert runner.get_wait_metrics_snapshot()["pods_wait_aborted_total"] == 1
