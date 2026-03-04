@@ -20,11 +20,18 @@ from ..constants import (
     K8S_SYNC_D_JOB_IMAGE,
     K8S_SYNC_D_WORKER_HOSTFILE_PATH,
     K8S_SYNC_D_DEFAULT_N_BATCH_FILES,
-    K8S_SYNC_D_DEFAULT_N_CPU_PER_WORKER,
+    K8S_SYNC_D_DEFAULT_WORKER_N_CPU,
     K8S_SYNC_D_DEFAULT_N_WORKERS,
     K8S_SYNC_D_DEFAULT_MASTER_N_CPU,
     K8S_SYNC_D_DEFAULT_MASTER_MEMORY,
     K8S_SYNC_D_DEFAULT_WORKER_MEMORY,
+    K8S_SYNC_N_JOB_TEMPLATE,
+    K8S_SYNC_N_JOB_IMAGE,
+    K8S_SYNC_N_DEFAULT_N_WORKERS,
+    K8S_SYNC_N_DEFAULT_WORKER_N_CPU,
+    K8S_SYNC_N_DEFAULT_MASTER_N_CPU,
+    K8S_SYNC_N_DEFAULT_MASTER_MEMORY,
+    K8S_SYNC_N_DEFAULT_WORKER_MEMORY,
     K8S_SYNC_LOG_TAIL_LINES,
     K8S_SYNC_PROGRESS_UPDATE_INTERVAL,
     K8S_SYNC_VERIFIER_TEMPLATE,
@@ -198,24 +205,20 @@ class SyncTaskHandler(BaseTaskHandler):
                 )
 
         # ------------------- TASK RUNNING -------------------
-        master_node_group = [
-            {src_info["label"]: "true"},  # src node 중에 마스터 할당
-        ]
-        worker_node_group = [
-            {src_info["label"]: "true"},
-            {dst_info["label"]: "true"},
-        ]
-
-        queue_name = await self._get_task_queue_name(task_id)
-
         # TODO: operation type 정하기 (dsync, nsync)
-        exists = await self.job_runner.has_node_with_true_labels(required_labels)
-        logger.info("[Task %s] dsync candidate node exists=%s", task_id, exists)
-        
-        
+        queue_name = await self._get_task_queue_name(task_id)
         op_type = "dsync"
+        if not await self.job_runner.has_node_with_true_labels(required_labels):
+            op_type = "nsync"
 
         if op_type == "dsync":
+            # DSYNC
+            logger.info("[Task %s] Running 'dsync'", task_id)
+            sync_master_node = {src_info["label"]: "true"}
+            worker_node_group = [
+                {src_info["label"]: "true"},
+                {dst_info["label"]: "true"},
+            ]
             storage_volumes = [
                 {
                     "name": make_volume_name_from_path(p),
@@ -238,11 +241,11 @@ class SyncTaskHandler(BaseTaskHandler):
                     "n_workers": int(K8S_SYNC_D_DEFAULT_N_WORKERS),
                     "queue_name": queue_name,
                     "storage_volumes": storage_volumes,
-                    "master_node_group": master_node_group,
+                    "sync_master_node": sync_master_node,
                     "master_n_cpu": int(K8S_SYNC_D_DEFAULT_MASTER_N_CPU),
                     "master_memory": K8S_SYNC_D_DEFAULT_MASTER_MEMORY,
                     "worker_node_group": worker_node_group,
-                    "worker_n_cpu": int(K8S_SYNC_D_DEFAULT_N_CPU_PER_WORKER),
+                    "worker_n_cpu": int(K8S_SYNC_D_DEFAULT_WORKER_N_CPU),
                     "worker_memory": K8S_SYNC_D_DEFAULT_WORKER_MEMORY,
                 },
             )
@@ -304,6 +307,121 @@ class SyncTaskHandler(BaseTaskHandler):
                     dst_path=dst,
                     options=options,
                 )
+
+            finally:
+                try:
+                    await self._cleanup_job(
+                        task_id, task_job_name, f"{op_type} job cleaned up"
+                    )
+                except TaskJobError:
+                    logger.warning(
+                        f"[Task {task_id}] Failed to clean up verifier job {task_job_name}"
+                    )
+
+        else:
+            # NSYNC
+            logger.info("[Task %s] Running 'nsync'", task_id)
+            sync_master_node = {src_info["label"]: "true"}
+            sync_worker_src_node = {src_info["label"]: "true"}
+            sync_worker_dst_node = {dst_info["label"]: "true"}
+            src_storage_volume = {
+                "name": make_volume_name_from_path(src_mount_path),
+                "mountPath": src_mount_path,
+                "hostPath": src_mount_path,
+                "readOnly": False,
+                "type": "Directory",
+            }
+            dst_storage_volume = {
+                "name": make_volume_name_from_path(dst_mount_path),
+                "mountPath": dst_mount_path,
+                "hostPath": dst_mount_path,
+                "readOnly": False,
+                "type": "Directory",
+            }
+            task_obj = self._render_template(
+                K8S_SYNC_N_JOB_TEMPLATE,
+                {
+                    "task_id": task_id,
+                    "user_id": user_id,
+                    "job_label": K8S_SYNC_JOB_LABEL,
+                    "job_name_prefix": K8S_SYNC_JOB_NAME_PREFIX,
+                    "service_image": K8S_SYNC_N_JOB_IMAGE,
+                    "n_workers": int(K8S_SYNC_N_DEFAULT_N_WORKERS),
+                    "queue_name": queue_name,
+                    "src_storage_volume": src_storage_volume,
+                    "dst_storage_volume": dst_storage_volume,
+                    "sync_master_node": sync_master_node,
+                    "master_n_cpu": int(K8S_SYNC_N_DEFAULT_MASTER_N_CPU),
+                    "master_memory": K8S_SYNC_N_DEFAULT_MASTER_MEMORY,
+                    "sync_worker_src_node": sync_worker_src_node,
+                    "sync_worker_dst_node": sync_worker_dst_node,
+                    "worker_n_cpu": int(K8S_SYNC_N_DEFAULT_WORKER_N_CPU),
+                    "worker_memory": K8S_SYNC_N_DEFAULT_WORKER_MEMORY,
+                },
+            )
+
+            task_job_name = f"{K8S_SYNC_JOB_NAME_PREFIX}-{task_id}"
+            await self._add_active_job(
+                task_id, task_job_name, f"Registered sync job - {op_type}"
+            )
+
+            try:
+                await self._ensure_task_running(task_id)
+                await self.job_runner.create_job(task_obj, task_id=task_id)
+
+                await self._ensure_task_running(task_id)
+                label_selector = f"{K8S_SYNC_JOB_LABEL}={task_id}"
+                expected_pods = self.job_runner.infer_expected_pod_count(
+                    task_obj,
+                    default=1 + 2 * int(K8S_SYNC_N_DEFAULT_N_WORKERS),
+                )
+                logger.info(
+                    "[Task %s] Expected sync pod count: %d",
+                    task_id,
+                    expected_pods,
+                )
+                await self.job_runner.wait_for_pods_scheduled(
+                    task_id=task_id,
+                    label_selector=label_selector,
+                    expected=expected_pods,
+                    timeout=POD_SCHEDULE_TIMEOUT_SECONDS,
+                    should_continue=lambda: self._ensure_task_running(task_id),
+                    schedule_precheck=lambda: self.job_runner.has_nodes_covering_true_labels(
+                        required_labels
+                    ),
+                    schedule_precheck_error=(
+                        "No nodes collectively satisfy required labels with true values: "
+                        f"{required_labels}"
+                    ),
+                )
+                sync_pods = await self.job_runner.wait_for_pods_ready(
+                    task_id=task_id,
+                    label_selector=label_selector,
+                    expected=expected_pods,
+                    timeout=POD_READY_TIMEOUT_SECONDS,
+                    should_continue=lambda: self._ensure_task_running(task_id),
+                )
+                worker_pod_name = self._pick_master_pod(task_id, sync_pods).metadata.name
+                master_pod_name = self._pick_master_pod(task_id, sync_pods).metadata.name
+
+                logger.info(worker_pod_name)
+                logger.info(master_pod_name)
+
+                TEST_CMD = "while true; do date '+%Y-%m-%d %H:%M:%S'; sleep 1; done"
+                await self._ensure_task_running(task_id)
+                logger.info(f"Run infinite loop on {sync_pods[0].metadata.name}")
+                await self.job_runner.exec_in_pod(
+                    sync_pods[0].metadata.name, ["/bin/bash", "-c", TEST_CMD]
+                )
+
+                # result = await self._run_nsync(
+                #     task_id=task_id,
+                #     label_selector=label_selector,
+                #     pod_name=pod_name,
+                #     src_path=src,
+                #     dst_path=dst,
+                #     options=options,
+                # )
 
             finally:
                 try:
@@ -421,18 +539,14 @@ class SyncTaskHandler(BaseTaskHandler):
                 logger.info(f"[Task {task_id}] dst type => {output}")
             checks.append(PodPathCheckResult(name=pod_name, output=output))
 
-        src_path_type = next(
-            (r.output for r in checks if "src-checker" in r.name), None
-        )
-        dst_path_type = next(
-            (r.output for r in checks if "dst-checker" in r.name), None
-        )
+        src_path_type = next((r.output for r in checks if "src-checker" in r.name), None)
+        dst_path_type = next((r.output for r in checks if "dst-checker" in r.name), None)
 
         if src_path_type == "__NOT_FOUND__":
             raise TaskInvalidDirectoryError(
                 task_id, src_path, "Cannot find the src path"
             )
-        
+
         if src_path_type not in {"__FILE__", "__DIR__"}:
             raise TaskInvalidDirectoryError(
                 task_id, src_path, f"Invalid src path type: {src_path_type}"
@@ -491,17 +605,13 @@ class SyncTaskHandler(BaseTaskHandler):
             logger.info(f"[Task {task_id}] {type_path} ownership => {output}")
             checks.append(PodPathCheckResult(name=pod_name, output=output))
 
-        src_ownership = next(
-            (r.output for r in checks if "src-checker" in r.name), None
-        )
+        src_ownership = next((r.output for r in checks if "src-checker" in r.name), None)
         if src_ownership != "__TRUE__":
             raise TaskInvalidDirectoryError(
                 task_id, src_path, f"Permission failed to src path"
             )
 
-        dst_ownership = next(
-            (r.output for r in checks if "dst-checker" in r.name), None
-        )
+        dst_ownership = next((r.output for r in checks if "dst-checker" in r.name), None)
         if dst_ownership != "__TRUE__":
             raise TaskInvalidDirectoryError(
                 task_id, dst_path, f"Permission failed to dst path"
@@ -565,6 +675,24 @@ class SyncTaskHandler(BaseTaskHandler):
                 return pod
 
         return pods[0]
+
+    @staticmethod
+    def _pick_worker_pods(task_id: str, pods: list[V1Pod]) -> list[V1Pod]:
+        if not pods:
+            raise TaskJobError(task_id, "No pods found for sync job")
+
+        ret_pods = set()
+        for pod in pods:
+            labels = pod.metadata.labels or {}
+            task_spec = labels.get("volcano.sh/task-spec", "")
+            if isinstance(task_spec, str) and "worker" in task_spec.lower():
+                ret_pods.append(pod)
+            else:
+                name = (pod.metadata.name or "").lower()
+                if "worker" in name:
+                    ret_pods.append(pod)
+
+        return ret_pods
 
     async def _check_format_sync(self, request: TaskRequest) -> None:
         params: Dict[str, Any] = request.parameters or {}
@@ -633,7 +761,7 @@ class SyncTaskHandler(BaseTaskHandler):
         tokens = self._build_dsync_tokens(options)
 
         dsync_cmd = DSYNC_RUN_CMD.format(
-            n_slots_per_host=int(K8S_SYNC_D_DEFAULT_N_CPU_PER_WORKER),
+            n_slots_per_host=int(K8S_SYNC_D_DEFAULT_WORKER_N_CPU),
             worker_hostfile=K8S_SYNC_D_WORKER_HOSTFILE_PATH,
             options=" ".join(shlex.quote(token) for token in tokens),
             src_path=src_path,
