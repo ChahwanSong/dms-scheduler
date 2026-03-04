@@ -99,10 +99,7 @@ class HotcoldTaskHandler(BaseTaskHandler):
                 task_id, target_path, f"Invalid path to service '{request.service}'"
             )
         required_labels = [mount_info["label"]]
-        verifier_label_requirements = {label: 1 for label in required_labels}
-        worker_label_requirements = {
-            label: int(K8S_HOTCOLD_DEFAULT_N_WORKERS) for label in required_labels
-        }
+        worker_count = int(K8S_HOTCOLD_DEFAULT_N_WORKERS)
 
         # ------------------- VERIFICATION -------------------
         await self._ensure_task_running(task_id)
@@ -147,11 +144,12 @@ class HotcoldTaskHandler(BaseTaskHandler):
                 timeout=POD_SCHEDULE_TIMEOUT_SECONDS,
                 should_continue=lambda: self._ensure_task_running(task_id),
                 schedule_precheck=lambda: self.job_runner.has_node_with_true_labels(
-                    verifier_label_requirements
+                    required_labels,
+                    1,
                 ),
                 schedule_precheck_error=(
-                    "No node has all required labels set to true with required counts: "
-                    f"{verifier_label_requirements}"
+                    "No node has all required labels set to true with required worker "
+                    f"count (1) for labels: {required_labels}"
                 ),
             )
             verifier_pods = await self.job_runner.wait_for_pods_ready(
@@ -245,11 +243,12 @@ class HotcoldTaskHandler(BaseTaskHandler):
                 timeout=POD_SCHEDULE_TIMEOUT_SECONDS,
                 should_continue=lambda: self._ensure_task_running(task_id),
                 schedule_precheck=lambda: self.job_runner.has_node_with_true_labels(
-                    worker_label_requirements
+                    required_labels,
+                    worker_count,
                 ),
                 schedule_precheck_error=(
-                    "No node has all required labels set to true with required counts: "
-                    f"{worker_label_requirements}"
+                    "No node has all required labels set to true with required worker "
+                    f"count ({worker_count}) for labels: {required_labels}"
                 ),
             )
             hotcold_pods = await self.job_runner.wait_for_pods_ready(
