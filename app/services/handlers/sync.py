@@ -109,6 +109,7 @@ class SyncTaskHandler(BaseTaskHandler):
                 task_id, dst, f"Invalid path to service '{request.service}'"
             )
         required_labels = list(dict.fromkeys([src_info["label"], dst_info["label"]]))
+        verifier_label_requirements = {label: 1 for label in required_labels}
 
         # ------------------- VERIFICATION -------------------
         await self._ensure_task_running(task_id)
@@ -156,11 +157,11 @@ class SyncTaskHandler(BaseTaskHandler):
                 timeout=POD_SCHEDULE_TIMEOUT_SECONDS,
                 should_continue=lambda: self._ensure_task_running(task_id),
                 schedule_precheck=lambda: self.job_runner.has_nodes_covering_true_labels(
-                    required_labels
+                    verifier_label_requirements
                 ),
                 schedule_precheck_error=(
-                    "No nodes collectively satisfy required labels with true values: "
-                    f"{required_labels}"
+                    "No nodes collectively satisfy required labels with true values and required counts: "
+                    f"{verifier_label_requirements}"
                 ),
             )
             verifier_pods = await self.job_runner.wait_for_pods_ready(
@@ -208,7 +209,14 @@ class SyncTaskHandler(BaseTaskHandler):
         # TODO: operation type 정하기 (dsync, nsync)
         queue_name = await self._get_task_queue_name(task_id)
         op_type = "dsync"
-        if not await self.job_runner.has_node_with_true_labels(required_labels):
+        dsync_label_requirements = {
+            label: int(K8S_SYNC_D_DEFAULT_N_WORKERS) for label in required_labels
+        }
+        nsync_label_requirements = {
+            src_info["label"]: int(K8S_SYNC_N_DEFAULT_N_WORKERS),
+            dst_info["label"]: int(K8S_SYNC_N_DEFAULT_N_WORKERS),
+        }
+        if not await self.job_runner.has_node_with_true_labels(dsync_label_requirements):
             op_type = "nsync"
 
         if op_type == "dsync":
@@ -277,11 +285,11 @@ class SyncTaskHandler(BaseTaskHandler):
                     timeout=POD_SCHEDULE_TIMEOUT_SECONDS,
                     should_continue=lambda: self._ensure_task_running(task_id),
                     schedule_precheck=lambda: self.job_runner.has_node_with_true_labels(
-                        required_labels
+                        dsync_label_requirements
                     ),
                     schedule_precheck_error=(
-                        "No node has all required labels set to true: "
-                        f"{required_labels}"
+                        "No node has all required labels set to true with required counts: "
+                        f"{dsync_label_requirements}"
                     ),
                 )
                 sync_pods = await self.job_runner.wait_for_pods_ready(
@@ -387,11 +395,11 @@ class SyncTaskHandler(BaseTaskHandler):
                     timeout=POD_SCHEDULE_TIMEOUT_SECONDS,
                     should_continue=lambda: self._ensure_task_running(task_id),
                     schedule_precheck=lambda: self.job_runner.has_nodes_covering_true_labels(
-                        required_labels
+                        nsync_label_requirements
                     ),
                     schedule_precheck_error=(
-                        "No nodes collectively satisfy required labels with true values: "
-                        f"{required_labels}"
+                        "No nodes collectively satisfy required labels with true values and required counts: "
+                        f"{nsync_label_requirements}"
                     ),
                 )
                 sync_pods = await self.job_runner.wait_for_pods_ready(
