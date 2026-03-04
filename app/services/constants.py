@@ -34,7 +34,7 @@ K8S_SYNC_D_JOB_IMAGE = "rts2411:5000/dms-mfu:latest"
 K8S_SYNC_D_JOB_TEMPLATE = "/dms/kube-dms-backend/template/dms-vcjob-sync-d.yaml"
 K8S_SYNC_D_WORKER_HOSTFILE_PATH = "/etc/volcano/sync_worker.host"
 K8S_SYNC_D_DEFAULT_N_BATCH_FILES = 1000000
-K8S_SYNC_D_DEFAULT_N_WORKERS = 3
+K8S_SYNC_D_DEFAULT_N_WORKERS = 2
 K8S_SYNC_D_DEFAULT_WORKER_N_CPU = 5
 K8S_SYNC_D_DEFAULT_MASTER_N_CPU = 2
 K8S_SYNC_D_DEFAULT_MASTER_MEMORY = "16Gi"
@@ -44,7 +44,7 @@ K8S_SYNC_N_JOB_IMAGE = "rts2411:5000/dms-mfu:latest"
 K8S_SYNC_N_JOB_TEMPLATE = "/dms/kube-dms-backend/template/dms-vcjob-sync-n.yaml"
 K8S_SYNC_N_MASTER_HOSTFILE_PATH = "/etc/volcano/sync_master.host"
 K8S_SYNC_N_WORKER_HOSTFILE_PATH = "/etc/volcano/sync_worker_src.host"
-K8S_SYNC_N_DEFAULT_N_WORKERS = 3
+K8S_SYNC_N_DEFAULT_N_WORKERS = 2
 K8S_SYNC_N_DEFAULT_WORKER_N_CPU = 5
 K8S_SYNC_N_DEFAULT_MASTER_N_CPU = 2
 K8S_SYNC_N_DEFAULT_MASTER_MEMORY = "16Gi"
@@ -68,9 +68,7 @@ K8S_RM_DEFAULT_MASTER_N_CPU = 2
 K8S_RM_DEFAULT_MASTER_MEMORY = "16Gi"
 K8S_RM_DEFAULT_WORKER_MEMORY = "32Gi"
 
-K8S_HOTCOLD_VERIFIER_TEMPLATE = (
-    "/dms/kube-dms-backend/template/dms-vcjob-hotcold-verifier.yaml"
-)
+K8S_HOTCOLD_VERIFIER_TEMPLATE = ("/dms/kube-dms-backend/template/dms-vcjob-hotcold-verifier.yaml")
 K8S_HOTCOLD_VERIFIER_JOB_NAME_PREFIX = "vcjob-hotcold-verifier"
 K8S_HOTCOLD_VERIFIER_JOB_LABEL = "hotcold-verifier-job-id"
 K8S_HOTCOLD_VERIFIER_JOB_IMAGE = "rts2411:5000/dms-verifier:latest"
