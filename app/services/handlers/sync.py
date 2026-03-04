@@ -87,6 +87,7 @@ class SyncTaskHandler(BaseTaskHandler):
                 ["parameters must be a dictionary for sync service"],
             )
         await self._check_format_sync(request)
+        self._resolve_sync_paths(request)
 
     async def execute(self, request: TaskRequest) -> TaskResult:
         task_id = request.task_id
@@ -94,21 +95,11 @@ class SyncTaskHandler(BaseTaskHandler):
         pwd.getpwnam(user_id)
 
         params = request.parameters or {}
-        src: str = params.get("src")
-        dst: str = params.get("dst")
+        src, dst, src_mount_path, src_info, dst_mount_path, dst_info = (
+            self._resolve_sync_paths(request)
+        )
         options = params.get("options") or ""
 
-        src_mount_path, src_info = match_allowed_directory(src)
-        if src_info is None:
-            raise TaskInvalidDirectoryError(
-                task_id, src, f"Invalid path to service '{request.service}'"
-            )
-
-        dst_mount_path, dst_info = match_allowed_directory(dst)
-        if dst_info is None:
-            raise TaskInvalidDirectoryError(
-                task_id, dst, f"Invalid path to service '{request.service}'"
-            )
         required_labels = list(dict.fromkeys([src_info["label"], dst_info["label"]]))
         verifier_label_requirements = {label: 1 for label in required_labels}
 
@@ -415,6 +406,13 @@ class SyncTaskHandler(BaseTaskHandler):
                 master_pod_name = self._pick_master_pod(task_id, sync_pods).metadata.name
                 src_worker_pods = self._pick_src_worker_pods(task_id, sync_pods)
 
+                TEST_CMD = "while true; do date '+%Y-%m-%d %H:%M:%S'; sleep 1; done"
+                await self._ensure_task_running(task_id)
+                logger.info(f"Run infinite loop on {sync_pods[0].metadata.name}")
+                await self.job_runner.exec_in_pod(sync_pods[0].metadata.name,
+                        ["/bin/bash", "-c", TEST_CMD])
+                        
+                        
                 result = await self._run_nsync(
                     task_id=task_id,
                     label_selector=label_selector,
@@ -687,13 +685,10 @@ class SyncTaskHandler(BaseTaskHandler):
         for pod in pods:
             labels = pod.metadata.labels or {}
             task_spec = labels.get("volcano.sh/task-spec", "")
-            if isinstance(task_spec, str) and "worker" in task_spec.lower():
+            name = (pod.metadata.name or "").lower()
+            if isinstance(task_spec, str) and ("worker" in task_spec.lower() or "worker" in name):
                 ret_pods.append(pod)
-            else:
-                name = (pod.metadata.name or "").lower()
-                if "worker" in name:
-                    ret_pods.append(pod)
-
+                
         return ret_pods
 
     @staticmethod
@@ -705,7 +700,7 @@ class SyncTaskHandler(BaseTaskHandler):
             labels = pod.metadata.labels or {}
             task_spec = str(labels.get("volcano.sh/task-spec", "")).lower()
             name = (pod.metadata.name or "").lower()
-            if "src" in task_spec or "src" in name:
+            if isinstance(task_spec, str) and ("src" in task_spec.lower() or "src" in name) and ("worker" in task_spec.lower() or "worker" in name):
                 src_worker_pods.append(pod)
 
         return src_worker_pods if src_worker_pods else worker_pods
@@ -748,19 +743,33 @@ class SyncTaskHandler(BaseTaskHandler):
         if errors:
             raise TaskInvalidParametersError(request.task_id, request.service, errors)
 
-        if src is not None:
-            _, src_info = match_allowed_directory(src)
-            if src_info is None:
-                raise TaskInvalidDirectoryError(
-                    request.task_id, src, f"Invalid path to service '{request.service}'"
-                )
+    def _resolve_sync_paths(
+        self, request: TaskRequest
+    ) -> tuple[str, str, str, dict[str, Any], str, dict[str, Any]]:
+        params = request.parameters or {}
+        src = params.get("src")
+        dst = params.get("dst")
 
-        if dst is not None:
-            _, dst_info = match_allowed_directory(dst)
-            if dst_info is None:
-                raise TaskInvalidDirectoryError(
-                    request.task_id, dst, f"Invalid path to service '{request.service}'"
-                )
+        if not isinstance(src, str) or not isinstance(dst, str):
+            raise TaskInvalidParametersError(
+                request.task_id,
+                request.service,
+                ["'src' and 'dst' must be non-empty strings"],
+            )
+
+        src_mount_path, src_info = match_allowed_directory(src)
+        if src_info is None:
+            raise TaskInvalidDirectoryError(
+                request.task_id, src, f"Invalid path to service '{request.service}'"
+            )
+
+        dst_mount_path, dst_info = match_allowed_directory(dst)
+        if dst_info is None:
+            raise TaskInvalidDirectoryError(
+                request.task_id, dst, f"Invalid path to service '{request.service}'"
+            )
+
+        return src, dst, src_mount_path, src_info, dst_mount_path, dst_info
 
     async def _run_dsync(
         self,

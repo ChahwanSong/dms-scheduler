@@ -58,6 +58,17 @@ SYNC_OWNERSHIP_VERIFY_DST_CMD = (
     "fi' bash {target_path} 2>/dev/null"
 )
 
+
+# target path 디렉토리가 읽기/실행 가능한지 (-r, -x)
+HOTCOLD_OWNERSHIP_VERIFY_CMD = (
+    "sudo -u {user_id} bash -c '"
+    'if [ -r "$1" ]; then '
+    '  echo "__TRUE__"; '
+    "else "
+    '  echo "__FALSE__"; '
+    "fi' bash {target_path} 2>/dev/null"
+)
+
 # Linux에서 파일 삭제 조건: parent directory에 write 권한 (-w), execute 권한 (-x)
 RM_OWNERSHIP_VERIFY_DST_CMD = (
     "sudo -u {user_id} bash -c '"

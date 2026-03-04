@@ -75,6 +75,7 @@ class HotcoldTaskHandler(BaseTaskHandler):
                 ["parameters must be a dictionary for hotcold service"],
             )
         await self._check_format_hotcold(request)
+        self._resolve_hotcold_target_path(request)
 
     async def execute(self, request: TaskRequest) -> TaskResult:
         task_id = request.task_id
@@ -82,7 +83,7 @@ class HotcoldTaskHandler(BaseTaskHandler):
         pwd.getpwnam(user_id)
 
         params = request.parameters or {}
-        target_path: str = params.get("path")
+        target_path, mount_path, mount_info = self._resolve_hotcold_target_path(request)
         if "options" in params:
             ignored_options = params.get("options")
             logger.info(
@@ -93,11 +94,6 @@ class HotcoldTaskHandler(BaseTaskHandler):
                 "Ignoring requested 'options'; hotcold uses fixed '--aggressive' mode",
             )
 
-        mount_path, mount_info = match_allowed_directory(target_path)
-        if mount_info is None:
-            raise TaskInvalidDirectoryError(
-                task_id, target_path, f"Invalid path to service '{request.service}'"
-            )
         required_labels = [mount_info["label"]]
         worker_count = int(K8S_HOTCOLD_DEFAULT_N_WORKERS)
 
@@ -479,14 +475,28 @@ class HotcoldTaskHandler(BaseTaskHandler):
         if errors:
             raise TaskInvalidParametersError(request.task_id, request.service, errors)
 
-        if target_path is not None:
-            _, target_info = match_allowed_directory(target_path)
-            if target_info is None:
-                raise TaskInvalidDirectoryError(
-                    request.task_id,
-                    target_path,
-                    f"Invalid path to service '{request.service}'",
-                )
+    def _resolve_hotcold_target_path(
+        self, request: TaskRequest
+    ) -> tuple[str, str, dict[str, Any]]:
+        params = request.parameters or {}
+        target_path = params.get("path")
+
+        if not isinstance(target_path, str) or not target_path:
+            raise TaskInvalidParametersError(
+                request.task_id,
+                request.service,
+                ["'path' must be a non-empty string"],
+            )
+
+        mount_path, mount_info = match_allowed_directory(target_path)
+        if mount_info is None:
+            raise TaskInvalidDirectoryError(
+                request.task_id,
+                target_path,
+                f"Invalid path to service '{request.service}'",
+            )
+
+        return target_path, mount_path, mount_info
 
     async def _run_hotcold(
         self,
