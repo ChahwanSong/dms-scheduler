@@ -32,6 +32,7 @@ from ..constants import (
     K8S_SYNC_N_DEFAULT_MASTER_N_CPU,
     K8S_SYNC_N_DEFAULT_MASTER_MEMORY,
     K8S_SYNC_N_DEFAULT_WORKER_MEMORY,
+    K8S_SYNC_N_WORKER_HOSTFILE_PATH,
     K8S_SYNC_LOG_TAIL_LINES,
     K8S_SYNC_PROGRESS_UPDATE_INTERVAL,
     K8S_SYNC_VERIFIER_TEMPLATE,
@@ -411,27 +412,18 @@ class SyncTaskHandler(BaseTaskHandler):
                     timeout=POD_READY_TIMEOUT_SECONDS,
                     should_continue=lambda: self._ensure_task_running(task_id),
                 )
-                worker_pod_name = self._pick_master_pod(task_id, sync_pods).metadata.name
                 master_pod_name = self._pick_master_pod(task_id, sync_pods).metadata.name
+                src_worker_pods = self._pick_src_worker_pods(task_id, sync_pods)
 
-                logger.info(worker_pod_name)
-                logger.info(master_pod_name)
-
-                TEST_CMD = "while true; do date '+%Y-%m-%d %H:%M:%S'; sleep 1; done"
-                await self._ensure_task_running(task_id)
-                logger.info(f"Run infinite loop on {sync_pods[0].metadata.name}")
-                await self.job_runner.exec_in_pod(
-                    sync_pods[0].metadata.name, ["/bin/bash", "-c", TEST_CMD]
+                result = await self._run_nsync(
+                    task_id=task_id,
+                    label_selector=label_selector,
+                    master_pod_name=master_pod_name,
+                    src_worker_pod_names=[pod.metadata.name for pod in src_worker_pods],
+                    src_path=src,
+                    dst_path=dst,
+                    options=options,
                 )
-
-                # result = await self._run_nsync(
-                #     task_id=task_id,
-                #     label_selector=label_selector,
-                #     pod_name=pod_name,
-                #     src_path=src,
-                #     dst_path=dst,
-                #     options=options,
-                # )
 
             finally:
                 try:
@@ -691,7 +683,7 @@ class SyncTaskHandler(BaseTaskHandler):
         if not pods:
             raise TaskJobError(task_id, "No pods found for sync job")
 
-        ret_pods = set()
+        ret_pods: list[V1Pod] = []
         for pod in pods:
             labels = pod.metadata.labels or {}
             task_spec = labels.get("volcano.sh/task-spec", "")
@@ -703,6 +695,20 @@ class SyncTaskHandler(BaseTaskHandler):
                     ret_pods.append(pod)
 
         return ret_pods
+
+    @staticmethod
+    def _pick_src_worker_pods(task_id: str, pods: list[V1Pod]) -> list[V1Pod]:
+        worker_pods = SyncTaskHandler._pick_worker_pods(task_id, pods)
+        src_worker_pods: list[V1Pod] = []
+
+        for pod in worker_pods:
+            labels = pod.metadata.labels or {}
+            task_spec = str(labels.get("volcano.sh/task-spec", "")).lower()
+            name = (pod.metadata.name or "").lower()
+            if "src" in task_spec or "src" in name:
+                src_worker_pods.append(pod)
+
+        return src_worker_pods if src_worker_pods else worker_pods
 
     async def _check_format_sync(self, request: TaskRequest) -> None:
         params: Dict[str, Any] = request.parameters or {}
@@ -801,7 +807,7 @@ class SyncTaskHandler(BaseTaskHandler):
 
             dsync_result = await dsync_task
 
-            await self._record_dsync_exit_code(task_id, dsync_result)
+            await self._record_sync_exit_code(task_id, "dsync", dsync_result)
             await self.job_runner.wait_for_completion(
                 label_selector, success_phases=("Succeeded", "Running")
             )
@@ -856,16 +862,134 @@ class SyncTaskHandler(BaseTaskHandler):
             return TaskResult(pod_status="Unknown", launcher_output="")
         return task_result
 
-    async def _record_dsync_exit_code(self, task_id: str, result: ExecResult) -> None:
+    async def _run_nsync(
+        self,
+        task_id: str,
+        label_selector: str,
+        master_pod_name: str,
+        src_worker_pod_names: list[str],
+        src_path: str,
+        dst_path: str,
+        options: str,
+    ) -> TaskResult:
+        await self._ensure_task_running(task_id)
+
+        tokens = self._build_dsync_tokens(options)
+        master_cmd = DSYNC_RUN_CMD.format(
+            n_slots_per_host=int(K8S_SYNC_N_DEFAULT_WORKER_N_CPU),
+            worker_hostfile=K8S_SYNC_N_WORKER_HOSTFILE_PATH,
+            options=" ".join(shlex.quote(token) for token in tokens),
+            src_path=src_path,
+            dst_path=dst_path,
+        )
+        src_worker_cmd = "echo '[NSYNC_WORKER] READY' && hostname"
+
+        worker_tasks = [
+            asyncio.create_task(
+                self.job_runner.exec_in_pod_with_exit_code(
+                    pod_name,
+                    ["/bin/bash", "-c", src_worker_cmd],
+                )
+            )
+            for pod_name in src_worker_pod_names
+        ]
+        master_task = asyncio.create_task(
+            self.job_runner.exec_in_pod_with_exit_code(
+                master_pod_name,
+                ["/bin/bash", "-c", master_cmd],
+            )
+        )
+
+        task_result: TaskResult | None = None
+        master_result: ExecResult | None = None
+
+        try:
+            if worker_tasks:
+                worker_results = await asyncio.gather(*worker_tasks)
+                for pod_name, worker_result in zip(src_worker_pod_names, worker_results):
+                    await self._record_sync_exit_code(
+                        task_id,
+                        f"nsync worker ({pod_name})",
+                        worker_result,
+                    )
+
+            while True:
+                done, _ = await asyncio.wait(
+                    {master_task}, timeout=int(K8S_SYNC_PROGRESS_UPDATE_INTERVAL)
+                )
+                progress_result = await self._update_task_progress(
+                    task_id, label_selector, master_pod_name
+                )
+                if progress_result is not None:
+                    task_result = progress_result
+                if master_task in done:
+                    break
+
+            master_result = await master_task
+            await self._record_sync_exit_code(task_id, "nsync master", master_result)
+            await self.job_runner.wait_for_completion(
+                label_selector, success_phases=("Succeeded", "Running")
+            )
+            task_result = await self._build_task_result(
+                label_selector, master_pod_name, tail_lines=10000
+            )
+            logger.info("[Task %s] NSYNC task finished", task_id)
+
+        except asyncio.CancelledError:
+            raise
+        except TaskJobError as exc:
+            await self.state_store.append_log(task_id, f"nsync execution failed: {exc}")
+            raise
+        except Exception as exc:
+            await self.state_store.append_log(
+                task_id, f"nsync execution failed unexpectedly: {exc}"
+            )
+            raise TaskJobError(task_id, f"Unexpected nsync failure: {exc}") from exc
+        else:
+            await self.state_store.append_log(task_id, "nsync execution completed")
+        finally:
+            for worker_task in worker_tasks:
+                if not worker_task.done():
+                    worker_task.cancel()
+                    with suppress(asyncio.CancelledError):
+                        await worker_task
+
+            if not master_task.done():
+                master_task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await master_task
+
+            if task_result is None:
+                with suppress(Exception):
+                    task_result = await self._build_task_result(
+                        label_selector=label_selector,
+                        pod_name=master_pod_name,
+                        tail_lines=10000,
+                    )
+
+            if task_result is not None:
+                await self._save_sync_log_file(task_id, task_result.launcher_output or "")
+                task_result.launcher_output = self._tail_output(
+                    task_result.launcher_output or "",
+                    int(K8S_SYNC_LOG_TAIL_LINES),
+                )
+
+        if task_result is None:
+            return TaskResult(pod_status="Unknown", launcher_output="")
+        return task_result
+
+    async def _record_sync_exit_code(
+        self, task_id: str, op_name: str, result: ExecResult
+    ) -> None:
         exit_code = result.exit_code
         await self.state_store.append_log(
             task_id,
-            f"dsync exit code: {exit_code if exit_code is not None else 'unknown'} (0 is success)",
+            f"{op_name} exit code: {exit_code if exit_code is not None else 'unknown'} (0 is success)",
         )
 
         if exit_code not in (None, 0):
             stderr_output = result.stderr.strip()
-            message = f"dsync failed with exit code {exit_code}"
+            message = f"{op_name} failed with exit code {exit_code}"
             if stderr_output:
                 message = f"{message} - {stderr_output}"
             raise TaskJobError(task_id, message)
