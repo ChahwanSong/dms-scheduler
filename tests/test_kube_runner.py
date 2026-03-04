@@ -119,14 +119,14 @@ async def test_has_node_with_true_labels_returns_true_when_single_node_matches(m
 
     monkeypatch.setattr(runner, "get_node_label_map_filtered", _filtered)
 
-    assert await runner.has_node_with_true_labels({"src": 1, "dst": 1}) is True
+    assert await runner.has_node_with_true_labels(["src", "dst"], 1) is True
 
 
 @pytest.mark.anyio
 async def test_has_node_with_true_labels_returns_false_for_empty_input():
     runner = VolcanoJobRunner(namespace="default")
 
-    assert await runner.has_node_with_true_labels({}) is False
+    assert await runner.has_node_with_true_labels([], 1) is False
 
 
 
@@ -178,7 +178,7 @@ async def test_has_node_with_true_labels_checks_minimum_matching_nodes(monkeypat
 
     monkeypatch.setattr(runner, "get_node_label_map_filtered", _filtered)
 
-    assert await runner.has_node_with_true_labels({"src": 3, "dst": 2}) is False
+    assert await runner.has_node_with_true_labels(["src", "dst"], 3) is False
 
 
 @pytest.mark.anyio
@@ -207,8 +207,9 @@ async def test_wait_for_pods_scheduled_fails_when_schedule_precheck_is_false(mon
 
     monkeypatch.setattr(runner, "_require_clients", lambda: (_Core(), object()))
 
-    async def _always_false(label_requirements):
-        assert label_requirements == {"src": 1, "dst": 1}
+    async def _always_false(label_keys, worker_count):
+        assert label_keys == ["src", "dst"]
+        assert worker_count == 1
         return False
 
     monkeypatch.setattr(runner, "has_node_with_true_labels", _always_false)
@@ -219,7 +220,7 @@ async def test_wait_for_pods_scheduled_fails_when_schedule_precheck_is_false(mon
             label_selector="job=a",
             expected=1,
             timeout=5,
-            schedule_precheck=lambda: runner.has_node_with_true_labels({"src": 1, "dst": 1}),
+            schedule_precheck=lambda: runner.has_node_with_true_labels(["src", "dst"], 1),
             schedule_precheck_error="No node has all required labels set to true: ['src', 'dst']",
         )
 
@@ -231,10 +232,11 @@ async def test_wait_for_pods_scheduled_fails_when_schedule_precheck_is_false(mon
 async def test_wait_for_pods_scheduled_accepts_lambda_with_inputs(monkeypatch):
     runner = VolcanoJobRunner(namespace="default")
 
-    required_labels = {"src": 1, "dst": 1}
+    required_labels = ["src", "dst"]
+    required_worker_count = 1
 
-    async def _has_labels(label_requirements):
-        return label_requirements == required_labels
+    async def _has_labels(label_keys, worker_count):
+        return label_keys == required_labels and worker_count == required_worker_count
 
     monkeypatch.setattr(runner, "has_node_with_true_labels", _has_labels)
 
@@ -252,7 +254,7 @@ async def test_wait_for_pods_scheduled_accepts_lambda_with_inputs(monkeypatch):
         label_selector="job=a",
         expected=1,
         timeout=5,
-        schedule_precheck=lambda: runner.has_node_with_true_labels(required_labels),
+        schedule_precheck=lambda: runner.has_node_with_true_labels(required_labels, required_worker_count),
     )
 
     assert [p.metadata.name for p in pods] == ["p-1"]

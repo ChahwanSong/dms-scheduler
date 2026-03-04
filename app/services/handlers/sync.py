@@ -209,14 +209,15 @@ class SyncTaskHandler(BaseTaskHandler):
         # TODO: operation type 정하기 (dsync, nsync)
         queue_name = await self._get_task_queue_name(task_id)
         op_type = "dsync"
-        dsync_label_requirements = {
-            label: int(K8S_SYNC_D_DEFAULT_N_WORKERS) for label in required_labels
-        }
+        dsync_worker_count = int(K8S_SYNC_D_DEFAULT_N_WORKERS)
         nsync_label_requirements = {
             src_info["label"]: int(K8S_SYNC_N_DEFAULT_N_WORKERS),
             dst_info["label"]: int(K8S_SYNC_N_DEFAULT_N_WORKERS),
         }
-        if not await self.job_runner.has_node_with_true_labels(dsync_label_requirements):
+        if not await self.job_runner.has_node_with_true_labels(
+            required_labels,
+            dsync_worker_count,
+        ):
             op_type = "nsync"
 
         if op_type == "dsync":
@@ -285,11 +286,12 @@ class SyncTaskHandler(BaseTaskHandler):
                     timeout=POD_SCHEDULE_TIMEOUT_SECONDS,
                     should_continue=lambda: self._ensure_task_running(task_id),
                     schedule_precheck=lambda: self.job_runner.has_node_with_true_labels(
-                        dsync_label_requirements
+                        required_labels,
+                        dsync_worker_count,
                     ),
                     schedule_precheck_error=(
-                        "No node has all required labels set to true with required counts: "
-                        f"{dsync_label_requirements}"
+                        "No node has all required labels set to true with required worker "
+                        f"count ({dsync_worker_count}) for labels: {required_labels}"
                     ),
                 )
                 sync_pods = await self.job_runner.wait_for_pods_ready(

@@ -714,14 +714,17 @@ class VolcanoJobRunner:
             normalized[label_key] = parsed_minimum
         return normalized
 
-    async def has_node_with_true_labels(self, label_min_requirements: Mapping[str, Any]) -> bool:
+    async def has_node_with_true_labels(
+        self,
+        label_keys: Iterable[str],
+        required_worker_count: Any,
+    ) -> bool:
         """Return True if enough nodes contain every required label with value ``true``."""
-        normalized_requirements = self._normalize_label_min_requirements(label_min_requirements)
-        if not normalized_requirements:
+        normalized_label_keys = tuple(dict.fromkeys(label for label in label_keys if label))
+        parsed_worker_count = self._to_positive_int(required_worker_count)
+        if not normalized_label_keys or parsed_worker_count is None:
             return False
 
-        normalized_label_keys = tuple(normalized_requirements)
-        required_matching_nodes = max(normalized_requirements.values())
         node_labels = await self.get_node_label_map_filtered(normalized_label_keys)
 
         matching_nodes = sum(
@@ -729,7 +732,7 @@ class VolcanoJobRunner:
             for labels in node_labels.values()
             if all(labels.get(label_key) == "true" for label_key in normalized_label_keys)
         )
-        return matching_nodes >= required_matching_nodes
+        return matching_nodes >= parsed_worker_count
 
     async def has_nodes_covering_true_labels(
         self,
