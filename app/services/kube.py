@@ -700,35 +700,61 @@ class VolcanoJobRunner:
             for node, labels in full.items()
         }
 
-    async def has_node_with_true_labels(self, label_keys: Iterable[str]) -> bool:
-        """Return True if any node contains every given label with value ``true``."""
-        normalized_label_keys = tuple(dict.fromkeys(k for k in label_keys if k))
-        if not normalized_label_keys:
+    @staticmethod
+    def _normalize_label_min_requirements(
+        label_min_requirements: Mapping[str, Any],
+    ) -> dict[str, int]:
+        normalized: dict[str, int] = {}
+        for label_key, minimum_count in label_min_requirements.items():
+            if not label_key:
+                continue
+            parsed_minimum = VolcanoJobRunner._to_positive_int(minimum_count)
+            if parsed_minimum is None:
+                continue
+            normalized[label_key] = parsed_minimum
+        return normalized
+
+    async def has_node_with_true_labels(self, label_min_requirements: Mapping[str, Any]) -> bool:
+        """Return True if enough nodes contain every required label with value ``true``."""
+        normalized_requirements = self._normalize_label_min_requirements(label_min_requirements)
+        if not normalized_requirements:
             return False
 
+        normalized_label_keys = tuple(normalized_requirements)
+        required_matching_nodes = max(normalized_requirements.values())
         node_labels = await self.get_node_label_map_filtered(normalized_label_keys)
-        return any(
-            all(labels.get(label_key) == "true" for label_key in normalized_label_keys)
-            for labels in node_labels.values()
-        )
 
-    async def has_nodes_covering_true_labels(self, label_keys: Iterable[str]) -> bool:
-        """Return True if each given label is ``true`` on at least one node."""
-        normalized_label_keys = tuple(dict.fromkeys(k for k in label_keys if k))
-        if not normalized_label_keys:
+        matching_nodes = sum(
+            1
+            for labels in node_labels.values()
+            if all(labels.get(label_key) == "true" for label_key in normalized_label_keys)
+        )
+        return matching_nodes >= required_matching_nodes
+
+    async def has_nodes_covering_true_labels(
+        self,
+        label_min_requirements: Mapping[str, Any],
+    ) -> bool:
+        """Return True if each label has at least the required count of nodes with value ``true``."""
+        normalized_requirements = self._normalize_label_min_requirements(label_min_requirements)
+        if not normalized_requirements:
             return False
 
+        normalized_label_keys = tuple(normalized_requirements)
         node_labels = await self.get_node_label_map_filtered(normalized_label_keys)
         if not node_labels:
             return False
 
-        covered = {
-            label_key
-            for labels in node_labels.values()
+        covered_counts = {
+            label_key: sum(
+                1 for labels in node_labels.values() if labels.get(label_key) == "true"
+            )
             for label_key in normalized_label_keys
-            if labels.get(label_key) == "true"
         }
-        return all(label_key in covered for label_key in normalized_label_keys)
+        return all(
+            covered_counts.get(label_key, 0) >= required_count
+            for label_key, required_count in normalized_requirements.items()
+        )
 
     @staticmethod
     def _is_pod_ready(pod: V1Pod) -> bool:

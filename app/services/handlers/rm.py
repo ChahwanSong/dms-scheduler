@@ -99,6 +99,10 @@ class RmTaskHandler(BaseTaskHandler):
                 task_id, target_path, f"Invalid path to service '{request.service}'"
             )
         required_labels = [mount_info["label"]]
+        verifier_label_requirements = {label: 1 for label in required_labels}
+        worker_label_requirements = {
+            label: int(K8S_RM_DEFAULT_N_WORKERS) for label in required_labels
+        }
 
         # ------------------- VERIFICATION -------------------
         await self._ensure_task_running(task_id)
@@ -143,11 +147,11 @@ class RmTaskHandler(BaseTaskHandler):
                 timeout=POD_SCHEDULE_TIMEOUT_SECONDS,
                 should_continue=lambda: self._ensure_task_running(task_id),
                 schedule_precheck=lambda: self.job_runner.has_node_with_true_labels(
-                    required_labels
+                    verifier_label_requirements
                 ),
                 schedule_precheck_error=(
-                    "No node has all required labels set to true: "
-                    f"{required_labels}"
+                    "No node has all required labels set to true with required counts: "
+                    f"{verifier_label_requirements}"
                 ),
             )
             verifier_pods = await self.job_runner.wait_for_pods_ready(
@@ -241,11 +245,11 @@ class RmTaskHandler(BaseTaskHandler):
                 timeout=POD_SCHEDULE_TIMEOUT_SECONDS,
                 should_continue=lambda: self._ensure_task_running(task_id),
                 schedule_precheck=lambda: self.job_runner.has_node_with_true_labels(
-                    required_labels
+                    worker_label_requirements
                 ),
                 schedule_precheck_error=(
-                    "No node has all required labels set to true: "
-                    f"{required_labels}"
+                    "No node has all required labels set to true with required counts: "
+                    f"{worker_label_requirements}"
                 ),
             )
             rm_pods = await self.job_runner.wait_for_pods_ready(

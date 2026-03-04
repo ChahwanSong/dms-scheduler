@@ -119,14 +119,14 @@ async def test_has_node_with_true_labels_returns_true_when_single_node_matches(m
 
     monkeypatch.setattr(runner, "get_node_label_map_filtered", _filtered)
 
-    assert await runner.has_node_with_true_labels(["src", "dst"]) is True
+    assert await runner.has_node_with_true_labels({"src": 1, "dst": 1}) is True
 
 
 @pytest.mark.anyio
 async def test_has_node_with_true_labels_returns_false_for_empty_input():
     runner = VolcanoJobRunner(namespace="default")
 
-    assert await runner.has_node_with_true_labels([]) is False
+    assert await runner.has_node_with_true_labels({}) is False
 
 
 
@@ -144,14 +144,14 @@ async def test_has_nodes_covering_true_labels_allows_different_nodes(monkeypatch
 
     monkeypatch.setattr(runner, "get_node_label_map_filtered", _filtered)
 
-    assert await runner.has_nodes_covering_true_labels(["src", "dst"]) is True
+    assert await runner.has_nodes_covering_true_labels({"src": 1, "dst": 1}) is True
 
 
 @pytest.mark.anyio
 async def test_has_nodes_covering_true_labels_returns_false_for_empty_input():
     runner = VolcanoJobRunner(namespace="default")
 
-    assert await runner.has_nodes_covering_true_labels([]) is False
+    assert await runner.has_nodes_covering_true_labels({}) is False
 
 
 @pytest.mark.anyio
@@ -163,7 +163,39 @@ async def test_has_nodes_covering_true_labels_returns_false_when_missing_label(m
 
     monkeypatch.setattr(runner, "get_node_label_map_filtered", _filtered)
 
-    assert await runner.has_nodes_covering_true_labels(["src", "dst"]) is False
+    assert await runner.has_nodes_covering_true_labels({"src": 1, "dst": 1}) is False
+
+
+@pytest.mark.anyio
+async def test_has_node_with_true_labels_checks_minimum_matching_nodes(monkeypatch):
+    runner = VolcanoJobRunner(namespace="default")
+
+    async def _filtered(label_keys):
+        return {
+            "node-a": {"src": "true", "dst": "true"},
+            "node-b": {"src": "true", "dst": "true"},
+        }
+
+    monkeypatch.setattr(runner, "get_node_label_map_filtered", _filtered)
+
+    assert await runner.has_node_with_true_labels({"src": 3, "dst": 2}) is False
+
+
+@pytest.mark.anyio
+async def test_has_nodes_covering_true_labels_checks_per_label_minimum(monkeypatch):
+    runner = VolcanoJobRunner(namespace="default")
+
+    async def _filtered(label_keys):
+        return {
+            "node-a": {"src": "true", "dst": "false"},
+            "node-b": {"src": "true", "dst": "true"},
+            "node-c": {"src": "false", "dst": "true"},
+        }
+
+    monkeypatch.setattr(runner, "get_node_label_map_filtered", _filtered)
+
+    assert await runner.has_nodes_covering_true_labels({"src": 2, "dst": 2}) is True
+    assert await runner.has_nodes_covering_true_labels({"src": 3, "dst": 2}) is False
 
 @pytest.mark.anyio
 async def test_wait_for_pods_scheduled_fails_when_schedule_precheck_is_false(monkeypatch):
@@ -175,8 +207,8 @@ async def test_wait_for_pods_scheduled_fails_when_schedule_precheck_is_false(mon
 
     monkeypatch.setattr(runner, "_require_clients", lambda: (_Core(), object()))
 
-    async def _always_false(label_keys):
-        assert list(label_keys) == ["src", "dst"]
+    async def _always_false(label_requirements):
+        assert label_requirements == {"src": 1, "dst": 1}
         return False
 
     monkeypatch.setattr(runner, "has_node_with_true_labels", _always_false)
@@ -187,7 +219,7 @@ async def test_wait_for_pods_scheduled_fails_when_schedule_precheck_is_false(mon
             label_selector="job=a",
             expected=1,
             timeout=5,
-            schedule_precheck=lambda: runner.has_node_with_true_labels(["src", "dst"]),
+            schedule_precheck=lambda: runner.has_node_with_true_labels({"src": 1, "dst": 1}),
             schedule_precheck_error="No node has all required labels set to true: ['src', 'dst']",
         )
 
@@ -199,10 +231,10 @@ async def test_wait_for_pods_scheduled_fails_when_schedule_precheck_is_false(mon
 async def test_wait_for_pods_scheduled_accepts_lambda_with_inputs(monkeypatch):
     runner = VolcanoJobRunner(namespace="default")
 
-    required_labels = ["src", "dst"]
+    required_labels = {"src": 1, "dst": 1}
 
-    async def _has_labels(label_keys):
-        return list(label_keys) == required_labels
+    async def _has_labels(label_requirements):
+        return label_requirements == required_labels
 
     monkeypatch.setattr(runner, "has_node_with_true_labels", _has_labels)
 
@@ -268,7 +300,7 @@ async def test_wait_for_pods_ready_uses_configured_poll_interval(monkeypatch):
         pass
 
     async def _sleep(seconds):
-        assert seconds == 1
+        assert seconds == 5
         raise _StopLoop()
 
     monkeypatch.setattr("app.services.kube.asyncio.sleep", _sleep)
