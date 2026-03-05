@@ -253,9 +253,9 @@ class HotcoldTaskHandler(BaseTaskHandler):
             
             _temp = """TEST_CMD = "while true; do date '+%Y-%m-%d %H:%M:%S'; sleep 1; done"
             await self._ensure_task_running(task_id)
-            logger.info(f"Run infinite loop on {verifier_pods[0].metadata.name}")
-            await self.job_runner.exec_in_pod(verifier_pods[0].metadata.name,
-                    ["/bin/bash", "-c", TEST_CMD]) """
+            logger.info(f"Run infinite loop on {pod_name}")
+            await self.job_runner.exec_in_pod(pod_name,
+                    ["/bin/bash", "-c", TEST_CMD])"""
                     
             result = await self._run_hotcold(
                 task_id=task_id,
