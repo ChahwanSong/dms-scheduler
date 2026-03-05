@@ -58,7 +58,6 @@ SYNC_OWNERSHIP_VERIFY_DST_CMD = (
     "fi' bash {target_path} 2>/dev/null"
 )
 
-
 # target path 디렉토리가 읽기/실행 가능한지 (-r, -x)
 HOTCOLD_OWNERSHIP_VERIFY_CMD = (
     "sudo -u {user_id} bash -c '"
@@ -175,7 +174,12 @@ HOTCOLD_RUN_CMD = (
     "--mca btl tcp,self "
     "--mca btl_tcp_if_exclude lo "
     "--mca btl_tcp_nodelay 1 "
-    "--mca pml ob1 "
+    "--mca pml ob1 "  # 안정적인 MPI PML 환경 (UCX 는 가끔 PML component 못찾아서 오류남)
+    # ### RDMA 버전
+    # "--mca btl ^vader,openib,tcp "
+    # "--mca pml ucx "
+    # "--mca osc ucx "
+    # "-x UCX_TLS=rc_x,sm,self "
     "$BINARY_PATH_DHOTCOLD "
     "{options} "
     "{target_path} 2>&1 | tee -a /proc/1/fd/1; "

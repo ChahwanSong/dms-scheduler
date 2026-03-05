@@ -15,13 +15,14 @@ from kubernetes.client import V1Pod
 from ..cmds import (
     MOUNT_VERIFY_CMD,
     PATHTYPE_VERIFY_CMD,
-    RM_OWNERSHIP_VERIFY_DST_CMD,
+    HOTCOLD_OWNERSHIP_VERIFY_CMD,
     HOTCOLD_RUN_CMD,
 )
 from ..constants import (
     K8S_DMS_LOG_DIRECTORY,
     POD_SCHEDULE_TIMEOUT_SECONDS,
     POD_READY_TIMEOUT_SECONDS,
+    K8S_DMS_HOTCOLD_LOG_DIRECTORY,
     K8S_HOTCOLD_JOB_IMAGE,
     K8S_HOTCOLD_JOB_LABEL,
     K8S_HOTCOLD_LOG_TAIL_LINES,
@@ -151,7 +152,6 @@ class HotcoldTaskHandler(BaseTaskHandler):
 
             await self._verify_mount(task_id, verifier_pods, mount_path)
             await self._verify_pathtype(task_id, verifier_pods, target_path)
-
             if user_id != "root":
                 await self._verify_ownership(
                     task_id, user_id, verifier_pods, target_path
@@ -204,6 +204,7 @@ class HotcoldTaskHandler(BaseTaskHandler):
                 "worker_node_group": worker_node_group,
                 "worker_n_cpu": int(K8S_HOTCOLD_DEFAULT_N_CPU_PER_WORKER),
                 "worker_memory": K8S_HOTCOLD_DEFAULT_WORKER_MEMORY,
+                "hotcold_log_directory": K8S_DMS_HOTCOLD_LOG_DIRECTORY,
             },
         )
 
@@ -249,6 +250,13 @@ class HotcoldTaskHandler(BaseTaskHandler):
             )
             pod_name = self._pick_master_pod(task_id, hotcold_pods).metadata.name
 
+            
+            _temp = """TEST_CMD = "while true; do date '+%Y-%m-%d %H:%M:%S'; sleep 1; done"
+            await self._ensure_task_running(task_id)
+            logger.info(f"Run infinite loop on {verifier_pods[0].metadata.name}")
+            await self.job_runner.exec_in_pod(verifier_pods[0].metadata.name,
+                    ["/bin/bash", "-c", TEST_CMD]) """
+                    
             result = await self._run_hotcold(
                 task_id=task_id,
                 label_selector=label_selector,
@@ -380,7 +388,7 @@ class HotcoldTaskHandler(BaseTaskHandler):
                     [
                         "/bin/bash",
                         "-c",
-                        RM_OWNERSHIP_VERIFY_DST_CMD.format(
+                        HOTCOLD_OWNERSHIP_VERIFY_CMD.format(
                             user_id=user_id, target_path=target_path
                         ),
                     ],
@@ -585,9 +593,6 @@ class HotcoldTaskHandler(BaseTaskHandler):
                     )
 
             if task_result is not None:
-                # with suppress(Exception):
-                #     await self.state_store.set_result(task_id, task_result)
-
                 # enforce to save a log file
                 await self._save_hotcold_log_file(task_id, task_result.launcher_output or "")
 

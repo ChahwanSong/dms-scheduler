@@ -12,7 +12,9 @@ ALLOWED_DIRECTORIES = {
 }
 
 K8S_DMS_NAMESPACE = "dms-service"
-K8S_DMS_LOG_DIRECTORY = "/dms/log"
+K8S_DMS_LOG_DIRECTORY = "/dms/log" # dms-schceduler
+K8S_DMS_HOTCOLD_LOG_DIRECTORY = "/home/gpu1/cocoa.song/workspace/dms" # dms-worker
+
 POD_SCHEDULE_TIMEOUT_SECONDS = 36000
 POD_READY_TIMEOUT_SECONDS = 60
 POD_SCHEDULE_POLL_INTERVAL_SECONDS = 10
@@ -68,7 +70,7 @@ K8S_RM_DEFAULT_MASTER_N_CPU = 2
 K8S_RM_DEFAULT_MASTER_MEMORY = "16Gi"
 K8S_RM_DEFAULT_WORKER_MEMORY = "32Gi"
 
-K8S_HOTCOLD_VERIFIER_TEMPLATE = ("/dms/kube-dms-backend/template/dms-vcjob-hotcold-verifier.yaml")
+K8S_HOTCOLD_VERIFIER_TEMPLATE = "/dms/kube-dms-backend/template/dms-vcjob-hotcold-verifier.yaml"
 K8S_HOTCOLD_VERIFIER_JOB_NAME_PREFIX = "vcjob-hotcold-verifier"
 K8S_HOTCOLD_VERIFIER_JOB_LABEL = "hotcold-verifier-job-id"
 K8S_HOTCOLD_VERIFIER_JOB_IMAGE = "rts2411:5000/dms-verifier:latest"
@@ -76,10 +78,10 @@ K8S_HOTCOLD_VERIFIER_JOB_IMAGE = "rts2411:5000/dms-verifier:latest"
 K8S_HOTCOLD_JOB_NAME_PREFIX = "vcjob-hotcold"
 K8S_HOTCOLD_JOB_LABEL = "hotcold-job-id"
 K8S_HOTCOLD_JOB_IMAGE = "rts2411:5000/dms-mfu:latest"
-K8S_HOTCOLD_JOB_TEMPLATE = "/dms/kube-dms-backend/template/dms-vcjob-rm.yaml"
+K8S_HOTCOLD_JOB_TEMPLATE = "/dms/kube-dms-backend/template/dms-vcjob-hotcold.yaml"
 K8S_HOTCOLD_PROGRESS_UPDATE_INTERVAL = 5
 K8S_HOTCOLD_LOG_TAIL_LINES = 50
-K8S_HOTCOLD_WORKER_HOSTFILE_PATH = "/etc/volcano/rm_worker.host"
+K8S_HOTCOLD_WORKER_HOSTFILE_PATH = "/etc/volcano/hotcold_worker.host"
 K8S_HOTCOLD_DEFAULT_N_CPU_PER_WORKER = 5
 K8S_HOTCOLD_DEFAULT_N_WORKERS = 5
 K8S_HOTCOLD_DEFAULT_MASTER_N_CPU = 2
