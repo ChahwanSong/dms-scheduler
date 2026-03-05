@@ -575,9 +575,6 @@ class RmTaskHandler(BaseTaskHandler):
                     )
 
             if task_result is not None:
-                # with suppress(Exception):
-                #     await self.state_store.set_result(task_id, task_result)
-
                 # enforce to save a log file
                 await self._save_rm_log_file(task_id, task_result.launcher_output or "")
 
