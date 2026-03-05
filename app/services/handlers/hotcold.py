@@ -4,8 +4,9 @@ import asyncio
 import logging
 import os
 import pwd
+import shlex
 from contextlib import suppress
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Tuple
 
 import yaml
 from jinja2 import Template
@@ -83,16 +84,8 @@ class HotcoldTaskHandler(BaseTaskHandler):
         pwd.getpwnam(user_id)
 
         params = request.parameters or {}
+        options = self._get_validated_hotcold_options(request)
         target_path, mount_path, mount_info = self._resolve_hotcold_target_path(request)
-        if "options" in params:
-            ignored_options = params.get("options")
-            logger.info(
-                f"[Task {task_id}] Ignoring requested hotcold options: {ignored_options!r}"
-            )
-            await self.state_store.append_log(
-                task_id,
-                "Ignoring requested 'options'; hotcold uses fixed '--aggressive' mode",
-            )
 
         required_labels = [mount_info["label"]]
         worker_count = int(K8S_HOTCOLD_DEFAULT_N_WORKERS)
@@ -261,6 +254,7 @@ class HotcoldTaskHandler(BaseTaskHandler):
                 label_selector=label_selector,
                 pod_name=pod_name,
                 target_path=target_path,
+                options=options,
             )
 
         finally:
@@ -472,6 +466,9 @@ class HotcoldTaskHandler(BaseTaskHandler):
         elif ".." in target_path.split("/"):
             errors.append(f"'path' must not contain '..' segments, got {target_path!r}")
 
+        options_errors = self._collect_hotcold_options_errors(params.get("options"))
+        errors.extend(options_errors)
+
         if errors:
             raise TaskInvalidParametersError(request.task_id, request.service, errors)
 
@@ -504,13 +501,26 @@ class HotcoldTaskHandler(BaseTaskHandler):
         label_selector: str,
         pod_name: str,
         target_path: str,
+        options: str,
     ) -> TaskResult:
         await self._ensure_task_running(task_id)
+
+        tokens, overridden_outputs = self._build_hotcold_tokens(task_id, options)
+        if overridden_outputs:
+            forced_output_path = os.path.join(
+                K8S_DMS_LOG_DIRECTORY, f"{task_id}.hotcold.csv"
+            )
+            override_message = (
+                "Overriding requested hotcold --output option(s) "
+                f"{overridden_outputs} with forced path: {forced_output_path}"
+            )
+            logger.info(f"[Task {task_id}] {override_message}")
+            await self.state_store.append_log(task_id, override_message)
 
         hotcold_cmd = HOTCOLD_RUN_CMD.format(
             n_slots_per_host=int(K8S_HOTCOLD_DEFAULT_N_CPU_PER_WORKER),
             worker_hostfile=K8S_HOTCOLD_WORKER_HOSTFILE_PATH,
-            options="--aggressive",
+            options=" ".join(shlex.quote(token) for token in tokens),
             target_path=target_path,
         )
 
@@ -701,6 +711,144 @@ class HotcoldTaskHandler(BaseTaskHandler):
         sections.extend(truncated)
 
         return "\n".join(sections)
+
+    def _get_validated_hotcold_options(self, request: TaskRequest) -> str:
+        params: Dict[str, Any] = request.parameters or {}
+        options = params.get("options")
+
+        errors = self._collect_hotcold_options_errors(options)
+        if errors:
+            raise TaskInvalidParametersError(request.task_id, request.service, errors)
+
+        return options if isinstance(options, str) else ""
+
+    def _collect_hotcold_options_errors(self, options: Any) -> list[str]:
+        errors: list[str] = []
+
+        if options is None:
+            return errors
+
+        if not isinstance(options, str):
+            errors.append(
+                f"'options' must be a string if provided, got {type(options).__name__}"
+            )
+            return errors
+
+        errors.extend(self._validate_hotcold_options(options))
+        return errors
+
+    def _validate_hotcold_options(self, options: str) -> list[str]:
+        errors: list[str] = []
+
+        allowed_flags = {
+            "-o",
+            "--output",
+            "-d",
+            "--days",
+            "-u",
+            "--unit",
+            "-e",
+            "--exclude",
+            "-t",
+            "--time-field",
+            "--progress",
+            "--strict",
+            "--xdev",
+            "--follow-mounts",
+            "--unique-inode",
+            "--print",
+            "-v",
+            "--verbose",
+            "-q",
+            "--quiet",
+            "-h",
+            "--help",
+        }
+
+        flags_with_value: Dict[str, Any] = {
+            "-o": "str",
+            "--output": "str",
+            "-d": "int",
+            "--days": "int",
+            "-u": {"B", "KB", "MB", "GB", "TB", "PB"},
+            "--unit": {"B", "KB", "MB", "GB", "TB", "PB"},
+            "-e": "str",
+            "--exclude": "str",
+            "-t": {"atime", "mtime", "ctime", "btime"},
+            "--time-field": {"atime", "mtime", "ctime", "btime"},
+            "--progress": "int",
+        }
+
+        try:
+            tokens = shlex.split(options)
+        except ValueError as exc:
+            errors.append(f"Failed to parse hotcold options: {exc}")
+            return errors
+
+        i = 0
+        while i < len(tokens):
+            flag = tokens[i]
+
+            if flag not in allowed_flags:
+                errors.append(f"Unsupported hotcold option: {flag!r}")
+                i += 1
+                continue
+
+            expected = flags_with_value.get(flag)
+            if expected is None:
+                i += 1
+                continue
+
+            if i + 1 >= len(tokens):
+                errors.append(f"Option {flag!r} requires a value")
+                i += 1
+                continue
+
+            value = tokens[i + 1]
+            if expected == "int":
+                try:
+                    parsed = int(value)
+                    if parsed <= 0:
+                        errors.append(f"Option {flag!r} must be > 0, got {parsed}")
+                except ValueError:
+                    errors.append(f"Option {flag!r} must be an integer, got {value!r}")
+            elif isinstance(expected, set):
+                if value not in expected:
+                    errors.append(
+                        f"Option {flag!r} must be one of {sorted(expected)}, got {value!r}"
+                    )
+            elif expected == "str" and not value.strip():
+                errors.append(f"Option {flag!r} must be a non-empty string")
+
+            i += 2
+
+        return errors
+
+    def _build_hotcold_tokens(
+        self, task_id: str, options: str
+    ) -> Tuple[list[str], list[str]]:
+        tokens = shlex.split(options) if options else []
+        output_flags = {"-o", "--output"}
+
+        sanitized: list[str] = []
+        overridden_outputs: list[str] = []
+        i = 0
+        while i < len(tokens):
+            token = tokens[i]
+            if token in output_flags:
+                output_value = tokens[i + 1] if i + 1 < len(tokens) else ""
+                overridden_outputs.append(output_value)
+                i += 2
+                continue
+            sanitized.append(token)
+            i += 1
+
+        forced_output_path = os.path.join(
+            K8S_DMS_LOG_DIRECTORY, f"{task_id}.hotcold.csv"
+        )
+        sanitized.extend(["--output", forced_output_path])
+
+        return sanitized, overridden_outputs
 
     async def _cleanup_job(self, task_id: str, job_name: str, message: str) -> bool:
         state = await self.state_store.get_task(task_id)
