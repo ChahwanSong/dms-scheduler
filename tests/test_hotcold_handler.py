@@ -1,7 +1,7 @@
 import pytest
 
 from app.models.schemas import TaskRequest, TaskStatus
-from app.services.errors import TaskInvalidDirectoryError
+from app.services.errors import TaskInvalidParametersError
 from app.services.handlers.hotcold import HotcoldTaskHandler
 from app.services.kube import ExecResult
 
@@ -44,7 +44,7 @@ class DummyJobRunner:
 
 
 @pytest.mark.anyio
-async def test_check_format_hotcold_ignores_options_type():
+async def test_check_format_hotcold_rejects_non_string_options():
     handler = HotcoldTaskHandler(job_runner=None, state_store=None)
     request = TaskRequest(
         task_id="hotcold-1",
@@ -53,29 +53,23 @@ async def test_check_format_hotcold_ignores_options_type():
         parameters={"path": "/pvs/data", "options": {"recursive": True}},
     )
 
-    await handler._check_format_hotcold(request)
+    with pytest.raises(TaskInvalidParametersError):
+        await handler._check_format_hotcold(request)
 
 
 @pytest.mark.anyio
-async def test_execute_logs_ignored_options_before_path_validation():
+async def test_execute_validates_options_before_path_resolution():
     state_store = DummyStateStore()
     handler = HotcoldTaskHandler(job_runner=None, state_store=state_store)
     request = TaskRequest(
         task_id="hotcold-2",
         service="hotcold",
         user_id="root",
-        parameters={"path": "/not/allowed/path", "options": ["-rf"]},
+        parameters={"path": "/not/allowed/path", "options": "--bad-option"},
     )
 
-    with pytest.raises(TaskInvalidDirectoryError):
+    with pytest.raises(TaskInvalidParametersError):
         await handler.execute(request)
-
-    assert state_store.logs == [
-        (
-            "hotcold-2",
-            "Ignoring requested 'options'; hotcold uses fixed '--aggressive' mode",
-        )
-    ]
 
 
 @pytest.mark.anyio
@@ -94,10 +88,48 @@ async def test_run_hotcold_updates_progress_and_saves_log(tmp_path, monkeypatch)
         label_selector="hotcold-job-id=hotcold-3",
         pod_name="pod-1",
         target_path="/pvs/data",
+        options="--days 100 --time-field atime --unit GB --exclude *tmp* --print",
     )
 
     assert job_runner.exec_commands
-    assert "--aggressive" in job_runner.exec_commands[0][2]
+    assert "--days 100" in job_runner.exec_commands[0][2]
+    assert "--output" in job_runner.exec_commands[0][2]
+    assert str(tmp_path / "hotcold-3.hotcold.csv") in job_runner.exec_commands[0][2]
     assert state_store.results
     assert result.launcher_output
     assert (tmp_path / "hotcold-3.log").exists()
+
+
+@pytest.mark.anyio
+async def test_run_hotcold_logs_output_override(tmp_path, monkeypatch):
+    state_store = DummyStateStore()
+    job_runner = DummyJobRunner()
+    handler = HotcoldTaskHandler(job_runner=job_runner, state_store=state_store)
+
+    monkeypatch.setattr(
+        "app.services.handlers.hotcold.K8S_DMS_LOG_DIRECTORY",
+        str(tmp_path),
+    )
+
+    await handler._run_hotcold(
+        task_id="hotcold-4",
+        label_selector="hotcold-job-id=hotcold-4",
+        pod_name="pod-1",
+        target_path="/pvs/data",
+        options="--days 10 --output /tmp/from-user.csv",
+    )
+
+    assert any(
+        "Overriding requested hotcold --output option(s)" in message
+        and "hotcold-4.hotcold.csv" in message
+        for _task_id, message in state_store.logs
+    )
+
+
+def test_validate_hotcold_options_rejects_unsupported_flag():
+    handler = HotcoldTaskHandler(job_runner=None, state_store=None)
+
+    errors = handler._validate_hotcold_options("--days 30 --unknown value")
+
+    assert errors
+    assert "Unsupported hotcold option" in errors[0]
