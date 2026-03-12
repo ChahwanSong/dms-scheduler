@@ -32,7 +32,8 @@ from ..constants import (
     K8S_SYNC_N_DEFAULT_MASTER_N_CPU,
     K8S_SYNC_N_DEFAULT_MASTER_MEMORY,
     K8S_SYNC_N_DEFAULT_WORKER_MEMORY,
-    K8S_SYNC_N_WORKER_HOSTFILE_PATH,
+    K8S_SYNC_N_SRC_WORKER_HOSTFILE_PATH,
+    K8S_SYNC_N_DST_WORKER_HOSTFILE_PATH,
     K8S_SYNC_N_DEFAULT_N_BATCH_FILES,
     K8S_SYNC_LOG_TAIL_LINES,
     K8S_SYNC_PROGRESS_UPDATE_INTERVAL,
@@ -183,12 +184,6 @@ class SyncTaskHandler(BaseTaskHandler):
                     dst,
                     dst_path_type,
                 )
-
-            _temp = """TEST_CMD = "while true; do date '+%Y-%m-%d %H:%M:%S'; sleep 1; done"
-            await self._ensure_task_running(task_id)
-            logger.info(f"Run infinite loop on {verifier_pods[0].metadata.name}")
-            await self.job_runner.exec_in_pod(verifier_pods[0].metadata.name,
-                    ["/bin/bash", "-c", TEST_CMD]) """
         finally:
             try:
                 await self._cleanup_job(
@@ -299,12 +294,6 @@ class SyncTaskHandler(BaseTaskHandler):
                 )
                 pod_name = self._pick_master_pod(task_id, sync_pods).metadata.name
 
-                _temp = """TEST_CMD = "while true; do date '+%Y-%m-%d %H:%M:%S'; sleep 1; done"
-                await self._ensure_task_running(task_id)
-                logger.info(f"Run infinite loop on {sync_pods[0].metadata.name}")
-                await self.job_runner.exec_in_pod(sync_pods[0].metadata.name,
-                        ["/bin/bash", "-c", TEST_CMD])"""
-
                 result = await self._run_dsync(
                     task_id=task_id,
                     label_selector=label_selector,
@@ -408,20 +397,10 @@ class SyncTaskHandler(BaseTaskHandler):
                     should_continue=lambda: self._ensure_task_running(task_id),
                 )
                 master_pod_name = self._pick_master_pod(task_id, sync_pods).metadata.name
-                src_worker_pods = self._pick_src_worker_pods(task_id, sync_pods)
-
-                TEST_CMD = "while true; do date '+%Y-%m-%d %H:%M:%S'; sleep 1; done"
-                await self._ensure_task_running(task_id)
-                logger.info(f"Run infinite loop on {sync_pods[0].metadata.name}")
-                await self.job_runner.exec_in_pod(sync_pods[0].metadata.name,
-                        ["/bin/bash", "-c", TEST_CMD])
-                        
-                        
                 result = await self._run_nsync(
                     task_id=task_id,
                     label_selector=label_selector,
                     master_pod_name=master_pod_name,
-                    src_worker_pod_names=[pod.metadata.name for pod in src_worker_pods],
                     src_path=src,
                     dst_path=dst,
                     options=options,
@@ -680,34 +659,6 @@ class SyncTaskHandler(BaseTaskHandler):
 
         return pods[0]
 
-    @staticmethod
-    def _pick_worker_pods(task_id: str, pods: list[V1Pod]) -> list[V1Pod]:
-        if not pods:
-            raise TaskJobError(task_id, "No pods found for sync job")
-
-        ret_pods: list[V1Pod] = []
-        for pod in pods:
-            labels = pod.metadata.labels or {}
-            task_spec = labels.get("volcano.sh/task-spec", "")
-            name = (pod.metadata.name or "").lower()
-            if isinstance(task_spec, str) and ("worker" in task_spec.lower() or "worker" in name):
-                ret_pods.append(pod)
-                
-        return ret_pods
-
-    @staticmethod
-    def _pick_src_worker_pods(task_id: str, pods: list[V1Pod]) -> list[V1Pod]:
-        worker_pods = SyncTaskHandler._pick_worker_pods(task_id, pods)
-        src_worker_pods: list[V1Pod] = []
-
-        for pod in worker_pods:
-            labels = pod.metadata.labels or {}
-            task_spec = str(labels.get("volcano.sh/task-spec", "")).lower()
-            name = (pod.metadata.name or "").lower()
-            if isinstance(task_spec, str) and ("src" in task_spec.lower() or "src" in name) and ("worker" in task_spec.lower() or "worker" in name):
-                src_worker_pods.append(pod)
-
-        return src_worker_pods if src_worker_pods else worker_pods
 
     async def _check_format_sync(self, request: TaskRequest) -> None:
         params: Dict[str, Any] = request.parameters or {}
@@ -877,7 +828,6 @@ class SyncTaskHandler(BaseTaskHandler):
         task_id: str,
         label_selector: str,
         master_pod_name: str,
-        src_worker_pod_names: list[str],
         src_path: str,
         dst_path: str,
         options: str,
@@ -887,17 +837,13 @@ class SyncTaskHandler(BaseTaskHandler):
         tokens = self._build_nsync_tokens(options)
         nsync_cmd = NSYNC_RUN_CMD.format(
             n_slots_per_host=int(K8S_SYNC_N_DEFAULT_WORKER_N_CPU),
-            worker_hostfile=K8S_SYNC_N_WORKER_HOSTFILE_PATH,
+            src_worker_hostfile=K8S_SYNC_N_SRC_WORKER_HOSTFILE_PATH,
+            dst_worker_hostfile=K8S_SYNC_N_DST_WORKER_HOSTFILE_PATH,
             options=" ".join(shlex.quote(token) for token in tokens),
             src_path=src_path,
             dst_path=dst_path,
         )
 
-        if src_worker_pod_names:
-            await self.state_store.append_log(
-                task_id,
-                f"nsync worker pods allocated: {', '.join(src_worker_pod_names)}",
-            )
 
         master_task = asyncio.create_task(
             self.job_runner.exec_in_pod_with_exit_code(
