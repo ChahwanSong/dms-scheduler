@@ -122,6 +122,36 @@ DSYNC_RUN_CMD = (
     "exit $rc"
 )
 
+
+NSYNC_RUN_CMD = (
+    # host:slots,host:slots,... 포맷으로 MPI_HOST 생성
+    "MPI_HOST=$(awk -v slots={n_slots_per_host} '{{printf \"%s:%d,\",$0,slots}}' {worker_hostfile} | sed 's/,$//')\n"
+    # 전체 호스트 수와 총 프로세스 수 계산
+    "NHOSTS=$(grep -cve '^\\s*$' {worker_hostfile})\n"
+    "NP=$((NHOSTS * {n_slots_per_host}))\n"
+    # nsync 실행
+    "$OMPI/bin/mpirun -np $NP "
+    "--host $MPI_HOST "
+    "--prefix $OMPI "
+    "-x LD_LIBRARY_PATH=$OMPI/lib:$LD_LIBRARY_PATH "
+    "--mca orte_keep_fqdn_hostnames 1 "
+    "--mca plm_rsh_agent ssh "
+    "--mca btl tcp,self "
+    "--mca btl_tcp_if_exclude lo "
+    "--mca btl_tcp_nodelay 1 "
+    "--mca pml ob1 "
+    "nsync "
+    "{options} "
+    "{src_path} {dst_path} 2>&1 | tee -a /proc/1/fd/1; "
+    "rc=${{PIPESTATUS[0]}}; "
+    'if [ "$rc" -eq 0 ]; then '
+    "  echo '[NSYNC_STATUS] SUCCESS' | tee -a /proc/1/fd/1; "
+    "else "
+    '  echo "[NSYNC_STATUS] FAILED (code=$rc)" | tee -a /proc/1/fd/1; '
+    "fi; "
+    "exit $rc"
+)
+
 DRM_RUN_CMD = (
     # host:slots,host:slots,... 포맷으로 MPI_HOST 생성
     "MPI_HOST=$(awk -v slots={n_slots_per_host} '{{printf \"%s:%d,\",$0,slots}}' {worker_hostfile} | sed 's/,$//')\n"

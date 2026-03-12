@@ -74,6 +74,20 @@ Task lifecycle states are persisted in Redis and updated as the scheduler runs (
 
 Cancellation requests are matched against the stored `service` and `user_id` for safety. If a match is found, the scheduler records a `cancel_requested` status, relays the request to the handler, and removes any persisted Kubernetes job references as each job is deleted. When the handler observes the cancelled jobs completing or failing, it records the events in task logs so the lifecycle is auditable.
 
+
+### Sync `options` behavior
+- `sync` tasks dynamically choose `dsync` or `nsync` at runtime based on cluster label availability.
+- `parameters.options` is validated **after** the runtime operation type is selected, so each engine is validated with its own schema.
+
+#### `dsync` options
+- Supported flags: `--batch-files`, `--bufsize`, `--chunksize`, `--xattrs`, `--contents`, `--no-dereference`, `--direct`, `--open-noatime`, `--delete`.
+- Defaults injected when missing: `--batch-files <K8S_SYNC_D_DEFAULT_N_BATCH_FILES>`, `--direct`, `--open-noatime`.
+
+#### `nsync` options
+- Supported flags: `--dryrun`, `-b`/`--batch-files`, `-D`/`--delete`, `-c`/`--contents`, `--bufsize`, `--imbalance-threshold`, `--role-mode`, `--role-map`, `--trace`, `--direct`, `--open-noatime`, `-q`/`--quiet`, `-h`/`--help`.
+- Defaults injected when missing: `--batch-files <K8S_SYNC_N_DEFAULT_N_BATCH_FILES>`, `--direct`, `--open-noatime`.
+- `-b`/`--batch-files` accepts an optional value for `nsync`; if omitted (e.g. `--batch-files` only), the scheduler injects `K8S_SYNC_N_DEFAULT_N_BATCH_FILES`.
+
 ## Usage examples
 Practical examples (curl and Python) are available in the [`test`](test) directory:
 - `api_usage.md` shows typical curl invocations.
