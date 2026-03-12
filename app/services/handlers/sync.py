@@ -33,6 +33,7 @@ from ..constants import (
     K8S_SYNC_N_DEFAULT_MASTER_MEMORY,
     K8S_SYNC_N_DEFAULT_WORKER_MEMORY,
     K8S_SYNC_N_WORKER_HOSTFILE_PATH,
+    K8S_SYNC_N_DEFAULT_N_BATCH_FILES,
     K8S_SYNC_LOG_TAIL_LINES,
     K8S_SYNC_PROGRESS_UPDATE_INTERVAL,
     K8S_SYNC_VERIFIER_TEMPLATE,
@@ -51,6 +52,7 @@ from ..cmds import (
     SYNC_OWNERSHIP_VERIFY_SRC_DIR_CMD,
     SYNC_OWNERSHIP_VERIFY_DST_CMD,
     DSYNC_RUN_CMD,
+    NSYNC_RUN_CMD,
 )
 from ..directory import make_volume_name_from_path, match_allowed_directory
 from ..errors import (
@@ -211,6 +213,8 @@ class SyncTaskHandler(BaseTaskHandler):
             dsync_worker_count,
         ):
             op_type = "nsync"
+
+        await self._validate_sync_options(task_id, request.service, op_type, options)
 
         if op_type == "dsync":
             # DSYNC
@@ -732,13 +736,10 @@ class SyncTaskHandler(BaseTaskHandler):
                 errors.append(f"'{key}' must not contain '..' segments, got {path!r}")
 
         options = params.get("options")
-        if options is not None:
-            if not isinstance(options, str):
-                errors.append(
-                    f"'options' must be a string if provided, got {type(options).__name__}"
-                )
-            else:
-                errors.extend(self._validate_dsync_options(options))
+        if options is not None and not isinstance(options, str):
+            errors.append(
+                f"'options' must be a string if provided, got {type(options).__name__}"
+            )
 
         if errors:
             raise TaskInvalidParametersError(request.task_id, request.service, errors)
@@ -883,45 +884,31 @@ class SyncTaskHandler(BaseTaskHandler):
     ) -> TaskResult:
         await self._ensure_task_running(task_id)
 
-        tokens = self._build_dsync_tokens(options)
-        master_cmd = DSYNC_RUN_CMD.format(
+        tokens = self._build_nsync_tokens(options)
+        nsync_cmd = NSYNC_RUN_CMD.format(
             n_slots_per_host=int(K8S_SYNC_N_DEFAULT_WORKER_N_CPU),
             worker_hostfile=K8S_SYNC_N_WORKER_HOSTFILE_PATH,
             options=" ".join(shlex.quote(token) for token in tokens),
             src_path=src_path,
             dst_path=dst_path,
         )
-        src_worker_cmd = "echo '[NSYNC_WORKER] READY' && hostname"
 
-        worker_tasks = [
-            asyncio.create_task(
-                self.job_runner.exec_in_pod_with_exit_code(
-                    pod_name,
-                    ["/bin/bash", "-c", src_worker_cmd],
-                )
+        if src_worker_pod_names:
+            await self.state_store.append_log(
+                task_id,
+                f"nsync worker pods allocated: {', '.join(src_worker_pod_names)}",
             )
-            for pod_name in src_worker_pod_names
-        ]
+
         master_task = asyncio.create_task(
             self.job_runner.exec_in_pod_with_exit_code(
                 master_pod_name,
-                ["/bin/bash", "-c", master_cmd],
+                ["/bin/bash", "-c", nsync_cmd],
             )
         )
 
         task_result: TaskResult | None = None
-        master_result: ExecResult | None = None
 
         try:
-            if worker_tasks:
-                worker_results = await asyncio.gather(*worker_tasks)
-                for pod_name, worker_result in zip(src_worker_pod_names, worker_results):
-                    await self._record_sync_exit_code(
-                        task_id,
-                        f"nsync worker ({pod_name})",
-                        worker_result,
-                    )
-
             while True:
                 done, _ = await asyncio.wait(
                     {master_task}, timeout=int(K8S_SYNC_PROGRESS_UPDATE_INTERVAL)
@@ -935,7 +922,7 @@ class SyncTaskHandler(BaseTaskHandler):
                     break
 
             master_result = await master_task
-            await self._record_sync_exit_code(task_id, "nsync master", master_result)
+            await self._record_sync_exit_code(task_id, "nsync", master_result)
             await self.job_runner.wait_for_completion(
                 label_selector, success_phases=("Succeeded", "Running")
             )
@@ -957,12 +944,6 @@ class SyncTaskHandler(BaseTaskHandler):
         else:
             await self.state_store.append_log(task_id, "nsync execution completed")
         finally:
-            for worker_task in worker_tasks:
-                if not worker_task.done():
-                    worker_task.cancel()
-                    with suppress(asyncio.CancelledError):
-                        await worker_task
-
             if not master_task.done():
                 master_task.cancel()
                 with suppress(asyncio.CancelledError):
@@ -1104,6 +1085,26 @@ class SyncTaskHandler(BaseTaskHandler):
 
         return "\n".join(sections)
 
+    async def _validate_sync_options(
+        self,
+        task_id: str,
+        service: str,
+        op_type: str,
+        options: str,
+    ) -> None:
+        if not options:
+            return
+
+        if op_type == "dsync":
+            errors = self._validate_dsync_options(options)
+        elif op_type == "nsync":
+            errors = self._validate_nsync_options(options)
+        else:
+            errors = [f"Unsupported sync operation type: {op_type!r}"]
+
+        if errors:
+            raise TaskInvalidParametersError(task_id, service, errors)
+
     def _validate_dsync_options(self, options: str) -> list[str]:
         errors: list[str] = []
 
@@ -1173,11 +1174,133 @@ class SyncTaskHandler(BaseTaskHandler):
 
         return errors
 
+    def _validate_nsync_options(self, options: str) -> list[str]:
+        errors: list[str] = []
+
+        allowed_flags = {
+            "--dryrun",
+            "-b",
+            "--batch-files",
+            "-D",
+            "--delete",
+            "-c",
+            "--contents",
+            "--bufsize",
+            "--imbalance-threshold",
+            "--role-mode",
+            "--role-map",
+            "--trace",
+            "--direct",
+            "--open-noatime",
+            "-q",
+            "--quiet",
+            "-h",
+            "--help",
+        }
+        flags_with_value = {
+            "-b": "optional-int",
+            "--batch-files": "optional-int",
+            "--bufsize": "str",
+            "--imbalance-threshold": "float",
+            "--role-mode": {"auto", "map"},
+            "--role-map": "str",
+        }
+
+        try:
+            tokens = shlex.split(options)
+        except ValueError as e:
+            errors.append(f"Failed to parse nsync options: {e}")
+            return errors
+
+        i = 0
+        while i < len(tokens):
+            flag = tokens[i]
+
+            if flag not in allowed_flags:
+                errors.append(f"Unsupported nsync option: {flag!r}")
+                i += 1
+                continue
+
+            expected = flags_with_value.get(flag)
+            if expected is None:
+                i += 1
+                continue
+
+            next_token = tokens[i + 1] if i + 1 < len(tokens) else None
+            has_value = next_token is not None and not next_token.startswith("-")
+
+            if expected == "optional-int" and not has_value:
+                i += 1
+                continue
+            if expected != "optional-int" and not has_value:
+                errors.append(f"Option {flag!r} requires a value")
+                i += 1
+                continue
+
+            value = next_token or ""
+            if expected in {"optional-int", "int"}:
+                try:
+                    parsed = int(value)
+                    if parsed <= 0:
+                        errors.append(f"Option {flag!r} must be > 0, got {parsed}")
+                except ValueError:
+                    errors.append(f"Option {flag!r} must be an integer, got {value!r}")
+            elif expected == "float":
+                try:
+                    parsed = float(value)
+                    if parsed <= 0:
+                        errors.append(f"Option {flag!r} must be > 0, got {parsed}")
+                except ValueError:
+                    errors.append(f"Option {flag!r} must be numeric, got {value!r}")
+            elif isinstance(expected, set):
+                if value not in expected:
+                    errors.append(
+                        f"Option {flag!r} must be one of {sorted(expected)}, got {value!r}"
+                    )
+            elif expected == "str" and not value.strip():
+                errors.append(f"Option {flag!r} must be a non-empty string")
+
+            i += 2
+
+        return errors
+
     def _build_dsync_tokens(self, options: str) -> list[str]:
         tokens = shlex.split(options) if options else []
 
         if "--batch-files" not in tokens:
             tokens.extend(["--batch-files", str(K8S_SYNC_D_DEFAULT_N_BATCH_FILES)])
+        if "--direct" not in tokens:
+            tokens.append("--direct")
+        if "--open-noatime" not in tokens:
+            tokens.append("--open-noatime")
+
+        return tokens
+
+    def _build_nsync_tokens(self, options: str) -> list[str]:
+        raw_tokens = shlex.split(options) if options else []
+        tokens: list[str] = []
+
+        i = 0
+        batch_specified = False
+        while i < len(raw_tokens):
+            token = raw_tokens[i]
+            if token in {"-b", "--batch-files"}:
+                batch_specified = True
+                tokens.append("--batch-files")
+                next_token = raw_tokens[i + 1] if i + 1 < len(raw_tokens) else None
+                if next_token is None or next_token.startswith("-"):
+                    tokens.append(str(K8S_SYNC_N_DEFAULT_N_BATCH_FILES))
+                    i += 1
+                    continue
+                tokens.append(next_token)
+                i += 2
+                continue
+
+            tokens.append(token)
+            i += 1
+
+        if not batch_specified:
+            tokens.extend(["--batch-files", str(K8S_SYNC_N_DEFAULT_N_BATCH_FILES)])
         if "--direct" not in tokens:
             tokens.append("--direct")
         if "--open-noatime" not in tokens:
