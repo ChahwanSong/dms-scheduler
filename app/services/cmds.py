@@ -140,7 +140,7 @@ NSYNC_RUN_CMD = (
     "--mca btl_tcp_if_exclude lo "
     "--mca btl_tcp_nodelay 1 "
     "--mca pml ob1 "
-    "nsync "
+    "$BINARY_PATH_NSYNC "
     "{options} "
     "{src_path} {dst_path} 2>&1 | tee -a /proc/1/fd/1; "
     "rc=${{PIPESTATUS[0]}}; "
