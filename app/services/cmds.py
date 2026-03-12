@@ -124,10 +124,10 @@ DSYNC_RUN_CMD = (
 
 
 NSYNC_RUN_CMD = (
-    # host:slots,host:slots,... 포맷으로 MPI_HOST 생성
-    "MPI_HOST=$(awk -v slots={n_slots_per_host} '{{printf \"%s:%d,\",$0,slots}}' {worker_hostfile} | sed 's/,$//')\n"
-    # 전체 호스트 수와 총 프로세스 수 계산
-    "NHOSTS=$(grep -cve '^\\s*$' {worker_hostfile})\n"
+    # src/dst hostfile을 합쳐 host:slots,host:slots,... 포맷으로 MPI_HOST 생성
+    "MPI_HOST=$(awk -v slots={n_slots_per_host} 'NF {{printf \"%s:%d,\",$0,slots}}' "
+    "{src_worker_hostfile} {dst_worker_hostfile} | sed 's/,$//')\n"
+    "NHOSTS=$(awk 'NF {{count++}} END {{print count+0}}' {src_worker_hostfile} {dst_worker_hostfile})\n"
     "NP=$((NHOSTS * {n_slots_per_host}))\n"
     # nsync 실행
     "$OMPI/bin/mpirun -np $NP "
@@ -140,6 +140,12 @@ NSYNC_RUN_CMD = (
     "--mca btl_tcp_if_exclude lo "
     "--mca btl_tcp_nodelay 1 "
     "--mca pml ob1 "
+    # ### RDMA 버전
+    # "--mca btl ^vader,openib,tcp "
+    # "--mca pml ucx "
+    # "--mca osc ucx "
+    # "-x UCX_TLS=rc_x,sm,self "
+    # 경로 및 옵션
     "$BINARY_PATH_NSYNC "
     "{options} "
     "{src_path} {dst_path} 2>&1 | tee -a /proc/1/fd/1; "

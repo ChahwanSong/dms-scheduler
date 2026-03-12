@@ -32,7 +32,8 @@ from ..constants import (
     K8S_SYNC_N_DEFAULT_MASTER_N_CPU,
     K8S_SYNC_N_DEFAULT_MASTER_MEMORY,
     K8S_SYNC_N_DEFAULT_WORKER_MEMORY,
-    K8S_SYNC_N_WORKER_HOSTFILE_PATH,
+    K8S_SYNC_N_SRC_WORKER_HOSTFILE_PATH,
+    K8S_SYNC_N_DST_WORKER_HOSTFILE_PATH,
     K8S_SYNC_N_DEFAULT_N_BATCH_FILES,
     K8S_SYNC_LOG_TAIL_LINES,
     K8S_SYNC_PROGRESS_UPDATE_INTERVAL,
@@ -183,12 +184,6 @@ class SyncTaskHandler(BaseTaskHandler):
                     dst,
                     dst_path_type,
                 )
-
-            _temp = """TEST_CMD = "while true; do date '+%Y-%m-%d %H:%M:%S'; sleep 1; done"
-            await self._ensure_task_running(task_id)
-            logger.info(f"Run infinite loop on {verifier_pods[0].metadata.name}")
-            await self.job_runner.exec_in_pod(verifier_pods[0].metadata.name,
-                    ["/bin/bash", "-c", TEST_CMD]) """
         finally:
             try:
                 await self._cleanup_job(
@@ -299,12 +294,6 @@ class SyncTaskHandler(BaseTaskHandler):
                 )
                 pod_name = self._pick_master_pod(task_id, sync_pods).metadata.name
 
-                _temp = """TEST_CMD = "while true; do date '+%Y-%m-%d %H:%M:%S'; sleep 1; done"
-                await self._ensure_task_running(task_id)
-                logger.info(f"Run infinite loop on {sync_pods[0].metadata.name}")
-                await self.job_runner.exec_in_pod(sync_pods[0].metadata.name,
-                        ["/bin/bash", "-c", TEST_CMD])"""
-
                 result = await self._run_dsync(
                     task_id=task_id,
                     label_selector=label_selector,
@@ -410,13 +399,6 @@ class SyncTaskHandler(BaseTaskHandler):
                 master_pod_name = self._pick_master_pod(task_id, sync_pods).metadata.name
                 src_worker_pods = self._pick_src_worker_pods(task_id, sync_pods)
 
-                TEST_CMD = "while true; do date '+%Y-%m-%d %H:%M:%S'; sleep 1; done"
-                await self._ensure_task_running(task_id)
-                logger.info(f"Run infinite loop on {sync_pods[0].metadata.name}")
-                await self.job_runner.exec_in_pod(sync_pods[0].metadata.name,
-                        ["/bin/bash", "-c", TEST_CMD])
-                        
-                        
                 result = await self._run_nsync(
                     task_id=task_id,
                     label_selector=label_selector,
@@ -887,7 +869,8 @@ class SyncTaskHandler(BaseTaskHandler):
         tokens = self._build_nsync_tokens(options)
         nsync_cmd = NSYNC_RUN_CMD.format(
             n_slots_per_host=int(K8S_SYNC_N_DEFAULT_WORKER_N_CPU),
-            worker_hostfile=K8S_SYNC_N_WORKER_HOSTFILE_PATH,
+            src_worker_hostfile=K8S_SYNC_N_SRC_WORKER_HOSTFILE_PATH,
+            dst_worker_hostfile=K8S_SYNC_N_DST_WORKER_HOSTFILE_PATH,
             options=" ".join(shlex.quote(token) for token in tokens),
             src_path=src_path,
             dst_path=dst_path,
