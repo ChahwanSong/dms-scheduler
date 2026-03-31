@@ -1,0 +1,192 @@
+# dms-vcjob-sync-d.yaml
+apiVersion: batch.volcano.sh/v1alpha1
+kind: Job
+metadata:
+  name: {{ job_name_prefix }}-{{ task_id }}
+  namespace: dms-service
+  labels:
+    "{{ job_label }}": "{{ task_id }}"
+    "volcano.sh/job-type": "MPI"
+spec:
+  # sync-master(1) + sync-worker(n_workers) 가 모두 스케줄될 때까지 대기
+  minAvailable: {{ 1 + n_workers }}
+  schedulerName: volcano
+  # Volcano Queue (없으면 low-q)
+  queue: {{ queue_name | default("low-q") }}
+
+  # 실패시 재시도 횟수 0회 (첫 실패에서 바로 PodFailed 이벤트)
+  maxRetry: 0
+
+  # MPI용 Volcano 플러그인 – hostfile + headless Service만 필요하므로 svc 플러그인만 사용
+  plugins:
+    svc: []
+
+  # Job 실패 시 재시작하지 않고 그냥 종료
+  # PodFailed → TerminateJob (재시작 X, 바로 실패 상태로 마무리)
+  # (actions 정의는 Volcano batch API 참고) 
+  # 노드 문제 등으로 Pod가 Evicted 되는 경우도 바로 Job 실패
+  policies:
+    - event: PodFailed
+      action: TerminateJob
+    - event: PodEvicted
+      action: TerminateJob
+
+  tasks:
+    # 1) sync-master
+    - replicas: 1
+      name: sync-master
+      policies:
+        - event: TaskCompleted
+          action: CompleteJob
+      template:
+        metadata:
+          labels:
+            app: sync-master
+            "{{ job_label }}": "{{ task_id }}"
+        spec:
+          serviceAccountName: job-submitter
+          restartPolicy: Never
+          terminationGracePeriodSeconds: 3
+          nodeSelector: {{ sync_master_node }}
+
+          # 컨테이너 setup
+          containers:
+            - name: sync-master
+              image: {{ service_image }}
+              imagePullPolicy: Always
+              env:
+              command: ["/bin/bash", "-c"]
+              args:
+                - |
+                  set -e
+                  
+                  # # /etc/hosts 에 LDAP 엔트리 append
+                  # if [ -f /etc/sssd/sssd_hosts ]; then
+                  #   echo "[INFO] Appending LDAP hosts to /etc/hosts"
+                  #   cat /etc/sssd/sssd_hosts >> /etc/hosts
+                  # else
+                  #   echo "[WARN] /etc/sssd/sssd_hosts not found"
+                  # fi
+                  
+                  # # start sssd
+                  # sssd
+
+                  # run sshd
+                  /usr/sbin/sshd -D &>/var/log/sshd.log &
+                  # chown -R {{ user_id }} /dms/.ssh
+
+                  # 대기
+                  tail -f /dev/null
+              resources:
+                requests:
+                  cpu: {{ master_n_cpu + 1 }}
+                  memory: {{ master_memory }}
+                limits:
+                  cpu: {{ master_n_cpu + 1 }}
+                  memory: {{ master_memory }}
+    # 2) sync-worker
+    - replicas: {{ n_workers }}
+      name: sync-worker
+      policies:
+        - event: TaskCompleted
+          action: CompleteJob
+      template:
+        metadata:
+          labels:
+            app: sync-worker
+            "{{ job_label }}": "{{ task_id }}"
+        spec:
+          serviceAccountName: job-submitter
+          restartPolicy: Never
+          terminationGracePeriodSeconds: 3
+          nodeSelector:
+          {% for sel in worker_node_group %}
+          {%   for k, v in sel.items() %}
+            {{ k }}: "{{ v }}"
+          {%   endfor %}
+          {% endfor %}
+
+          # affinity 추가 및 강제하기 (sync-worker 가 같은 node에 할당될 수 없음)
+          affinity:
+            podAntiAffinity:
+              requiredDuringSchedulingIgnoredDuringExecution:
+                - labelSelector:
+                    matchExpressions:
+                      - key: app
+                        operator: In
+                        values: ["sync-worker"]
+                      - key: "{{ job_label }}"
+                        operator: In
+                        values: ["{{ task_id }}"]
+                  topologyKey: "kubernetes.io/hostname"
+
+          # 컨테이너 setup
+          containers:
+            - name: sync-worker
+              image: {{ service_image }}
+              imagePullPolicy: Always
+              env:
+                - { name: OMPI_MCA_pml, value: ucx }
+                - { name: OMPI_MCA_btl, value: "^vader,tcp,openib" }
+                - { name: UCX_TLS, value: "rc_x,sm,self" }
+                - { name: UCX_NET_DEVICES, value: "{{ ucx_net_devices }}" }
+              securityContext:
+                privileged: true
+                capabilities:
+                  add: ["IPC_LOCK","SYS_RESOURCE","NET_ADMIN", "NET_RAW"]
+                runAsUser: 0
+              volumeMounts:
+                - name: infiniband-dev
+                  mountPath: /dev/infiniband
+                - name: infiniband-sys
+                  mountPath: /sys/class/infiniband
+                  readOnly: true
+              {% for vol in storage_volumes %}
+                - name: {{ vol.name }}
+                  mountPath: "{{ vol.mountPath }}"
+                  readOnly: {{ "true" if vol.readOnly else "false" }}
+              {% endfor %}
+              lifecycle:
+                preStop:
+                  exec:
+                    command: ["/bin/bash","-lc","pkill -TERM sshd || true"]
+              command: ["/bin/bash", "-c"]
+              args:
+                - |
+                  set -e
+                  # # /etc/hosts 에 LDAP 엔트리 append
+                  # if [ -f /etc/sssd/sssd_hosts ]; then
+                  #   echo "[INFO] Appending LDAP hosts to /etc/hosts"
+                  #   cat /etc/sssd/sssd_hosts >> /etc/hosts
+                  # else
+                  #   echo "[WARN] /etc/sssd/sssd_hosts not found"
+                  # fi
+                  
+                  # # start sssd
+                  # sssd
+
+                  # run sshd
+                  /usr/sbin/sshd -D &>/var/log/sshd.log &
+                  # chown -R {{ user_id }} /dms/.ssh
+
+                  # 대기
+                  tail -f /dev/null
+              resources:
+                requests:
+                  cpu: {{ worker_n_cpu + 1}}
+                  memory: {{ worker_memory }}
+                limits:
+                  cpu: {{ worker_n_cpu + 1 }}
+                  memory: {{ worker_memory }}
+                
+          volumes:
+            - name: infiniband-dev
+              hostPath: { path: /dev/infiniband, type: Directory }
+            - name: infiniband-sys
+              hostPath: { path: /sys/class/infiniband, type: Directory }
+          {% for vol in storage_volumes %}
+            - name: {{ vol.name }}
+              hostPath:
+                path: "{{ vol.hostPath }}"
+                type: "{{ vol.type | default("Directory") }}"
+          {% endfor %}

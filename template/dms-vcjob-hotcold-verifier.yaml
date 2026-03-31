@@ -1,0 +1,70 @@
+# dms-vcjob-hotcold-verifier.yaml
+apiVersion: batch.volcano.sh/v1alpha1
+kind: Job
+metadata:
+  name: {{ job_name_prefix }}-{{ task_id }}
+  namespace: dms-service
+  labels:
+    "{{ verifier_job_label }}": "{{ task_id }}"
+spec:
+  # target-chcker (1) 가 모두 스케줄될 때까지 대기
+  minAvailable: 1
+  schedulerName: volcano
+  # Volcano Queue (없으면 high-q)
+  queue: {{ queue_name | default("high-q") }}
+
+  # 실패시 재시도 횟수 0회 (첫 실패에서 바로 PodFailed 이벤트)
+  maxRetry: 0
+
+  # Job 실패 시 재시작하지 않고 그냥 종료
+  # PodFailed → TerminateJob (재시작 X, 바로 실패 상태로 마무리)
+  # 노드 문제 등으로 Pod가 Evicted 되는 경우도 바로 Job 실패
+  policies:
+    - event: PodFailed
+      action: TerminateJob
+    - event: PodEvicted
+      action: TerminateJob
+
+  tasks:
+    # target-checker
+    - replicas: 1
+      name: target-checker
+      policies:
+        - event: TaskCompleted
+          action: CompleteJob
+      template:
+        metadata:
+          labels:
+            app: target-checker
+            "{{ verifier_job_label }}": "{{ task_id }}"
+        spec:
+          hostNetwork: true             # host network
+          dnsPolicy: ClusterFirstWithHostNet
+          serviceAccountName: job-submitter
+          restartPolicy: Never
+          terminationGracePeriodSeconds: 3
+          nodeSelector: {{ target_checker_node }}
+          containers:
+            - name: target-checker
+              image: {{ verifier_image }}
+              imagePullPolicy: IfNotPresent
+              volumeMounts:
+                - name: {{ target_volume_name }}
+                  mountPath: {{ target_mount_path }}
+                  readOnly: false
+              command: ["/bin/bash", "-c"]
+              args:
+                - |
+                  set -e
+                  sssd
+                  sleep infinity
+              resources:
+                requests:
+                  cpu: 500m
+                  memory: "1Gi"
+                
+          volumes:
+            - name: {{ target_volume_name }}
+              hostPath:
+                path: {{ target_mount_path }}
+                type: Directory

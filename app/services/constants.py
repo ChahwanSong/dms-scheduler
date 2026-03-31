@@ -1,3 +1,13 @@
+from pathlib import Path
+
+
+_TEMPLATE_DIR = Path(__file__).resolve().parents[2] / "template"
+
+
+def _template_path(filename: str) -> str:
+    return str(_TEMPLATE_DIR / filename)
+
+
 ALLOWED_SERVICES = {"sync", "hotcold", "rm", "cp", "chmod"}
 
 ALLOWED_DIRECTORIES = {
@@ -20,9 +30,7 @@ POD_READY_TIMEOUT_SECONDS = 60
 POD_SCHEDULE_POLL_INTERVAL_SECONDS = 10
 POD_READY_POLL_INTERVAL_SECONDS = 5
 
-K8S_SYNC_VERIFIER_TEMPLATE = (
-    "/dms/kube-dms-backend/template/dms-vcjob-dir-verifier.yaml"
-)
+K8S_SYNC_VERIFIER_TEMPLATE = _template_path("dms-vcjob-dir-verifier.yaml")
 K8S_SYNC_VERIFIER_JOB_NAME_PREFIX = "vcjob-dir-verifier"
 K8S_SYNC_VERIFIER_JOB_LABEL = "dir-verifier-job-id"
 K8S_SYNC_VERIFIER_JOB_IMAGE = "rts2411:5000/dms-verifier:latest"
@@ -33,7 +41,7 @@ K8S_SYNC_PROGRESS_UPDATE_INTERVAL = 5
 K8S_SYNC_LOG_TAIL_LINES = 50
 
 K8S_SYNC_D_JOB_IMAGE = "rts2411:5000/dms-mfu:latest"
-K8S_SYNC_D_JOB_TEMPLATE = "/dms/kube-dms-backend/template/dms-vcjob-sync-d.yaml"
+K8S_SYNC_D_JOB_TEMPLATE = _template_path("dms-vcjob-sync-d.yaml")
 K8S_SYNC_D_WORKER_HOSTFILE_PATH = "/etc/volcano/sync_worker.host"
 K8S_SYNC_D_DEFAULT_N_BATCH_FILES = 1000000
 K8S_SYNC_D_DEFAULT_N_WORKERS = 2
@@ -43,7 +51,7 @@ K8S_SYNC_D_DEFAULT_MASTER_MEMORY = "16Gi"
 K8S_SYNC_D_DEFAULT_WORKER_MEMORY = "32Gi"
 
 K8S_SYNC_N_JOB_IMAGE = "rts2411:5000/dms-mfu:latest"
-K8S_SYNC_N_JOB_TEMPLATE = "/dms/kube-dms-backend/template/dms-vcjob-sync-n.yaml"
+K8S_SYNC_N_JOB_TEMPLATE = _template_path("dms-vcjob-sync-n.yaml")
 K8S_SYNC_N_MASTER_HOSTFILE_PATH = "/etc/volcano/sync_master.host"
 K8S_SYNC_N_SRC_WORKER_HOSTFILE_PATH = "/etc/volcano/sync_worker_src.host"
 K8S_SYNC_N_DST_WORKER_HOSTFILE_PATH = "/etc/volcano/sync_worker_dst.host"
@@ -54,7 +62,7 @@ K8S_SYNC_N_DEFAULT_MASTER_N_CPU = 2
 K8S_SYNC_N_DEFAULT_MASTER_MEMORY = "16Gi"
 K8S_SYNC_N_DEFAULT_WORKER_MEMORY = "32Gi"
 
-K8S_RM_VERIFIER_TEMPLATE = "/dms/kube-dms-backend/template/dms-vcjob-rm-verifier.yaml"
+K8S_RM_VERIFIER_TEMPLATE = _template_path("dms-vcjob-rm-verifier.yaml")
 K8S_RM_VERIFIER_JOB_NAME_PREFIX = "vcjob-rm-verifier"
 K8S_RM_VERIFIER_JOB_LABEL = "rm-verifier-job-id"
 K8S_RM_VERIFIER_JOB_IMAGE = "rts2411:5000/dms-verifier:latest"
@@ -62,7 +70,7 @@ K8S_RM_VERIFIER_JOB_IMAGE = "rts2411:5000/dms-verifier:latest"
 K8S_RM_JOB_NAME_PREFIX = "vcjob-rm"
 K8S_RM_JOB_LABEL = "rm-job-id"
 K8S_RM_JOB_IMAGE = "rts2411:5000/dms-mfu:latest"
-K8S_RM_JOB_TEMPLATE = "/dms/kube-dms-backend/template/dms-vcjob-rm.yaml"
+K8S_RM_JOB_TEMPLATE = _template_path("dms-vcjob-rm.yaml")
 K8S_RM_PROGRESS_UPDATE_INTERVAL = 5
 K8S_RM_LOG_TAIL_LINES = 50
 K8S_RM_WORKER_HOSTFILE_PATH = "/etc/volcano/rm_worker.host"
@@ -72,7 +80,7 @@ K8S_RM_DEFAULT_MASTER_N_CPU = 2
 K8S_RM_DEFAULT_MASTER_MEMORY = "16Gi"
 K8S_RM_DEFAULT_WORKER_MEMORY = "32Gi"
 
-K8S_HOTCOLD_VERIFIER_TEMPLATE = "/dms/kube-dms-backend/template/dms-vcjob-hotcold-verifier.yaml"
+K8S_HOTCOLD_VERIFIER_TEMPLATE = _template_path("dms-vcjob-hotcold-verifier.yaml")
 K8S_HOTCOLD_VERIFIER_JOB_NAME_PREFIX = "vcjob-hotcold-verifier"
 K8S_HOTCOLD_VERIFIER_JOB_LABEL = "hotcold-verifier-job-id"
 K8S_HOTCOLD_VERIFIER_JOB_IMAGE = "rts2411:5000/dms-verifier:latest"
@@ -80,7 +88,7 @@ K8S_HOTCOLD_VERIFIER_JOB_IMAGE = "rts2411:5000/dms-verifier:latest"
 K8S_HOTCOLD_JOB_NAME_PREFIX = "vcjob-hotcold"
 K8S_HOTCOLD_JOB_LABEL = "hotcold-job-id"
 K8S_HOTCOLD_JOB_IMAGE = "rts2411:5000/dms-mfu:latest"
-K8S_HOTCOLD_JOB_TEMPLATE = "/dms/kube-dms-backend/template/dms-vcjob-hotcold.yaml"
+K8S_HOTCOLD_JOB_TEMPLATE = _template_path("dms-vcjob-hotcold.yaml")
 K8S_HOTCOLD_PROGRESS_UPDATE_INTERVAL = 5
 K8S_HOTCOLD_LOG_TAIL_LINES = 50
 K8S_HOTCOLD_WORKER_HOSTFILE_PATH = "/etc/volcano/hotcold_worker.host"
